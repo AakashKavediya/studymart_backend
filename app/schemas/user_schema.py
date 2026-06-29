@@ -83,3 +83,11 @@ class LoginSchema(BaseModel):
 class LogoutSchema(BaseModel):
     refresh_token: str
 
+
+
+#----------------------------
+# REFRESH TOKEN SCHEMA
+#----------------------------
+
+class RefreshTokenSchema(BaseModel):
+    refresh_token: str

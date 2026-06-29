@@ -2,6 +2,8 @@
 from fastapi import FastAPI, Depends, status, Query
 from fastapi.security import HTTPBearer,  HTTPAuthorizationCredentials
 from datetime import datetime, timezone, timedelta
+from dotenv import load_dotenv
+from fastapi import Response, Request
 from fastapi import APIRouter, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from bson import ObjectId
@@ -10,14 +12,47 @@ from bson.errors import InvalidId
 from pydantic import BaseModel, EmailStr, field_validator
 from jose import jwt, JWTError
 from fastapi.concurrency import run_in_threadpool
+import secrets
 import bcrypt
+import asyncio
 import re
+import os
+
+
+
+#--------------------
+# Importing evironment variables
+#--------------------
+load_dotenv()
+SECRET_KEY = os.getenv("SECRET_KEY")
+ALGORITHM = os.getenv("ALGORITHM")
+ACCESS_TOKEN_EXPIRE_MINUTES = 15
+REFRESH_TOKEN_EXPIRE_DAYS = 7
+
+
+#--------------------
+# Importing Schema's
+#--------------------
+def create_access_token(user_id: str, email:str) -> str:
+    expire = datetime.utcnow() + timedelta(ACCESS_TOKEN_EXPIRE_MINUTES)
+    payLoad = {
+        "sub": user_id,
+        "email": email,
+        "exp": expire,
+        "type": "access"
+    }
+    return jwt.encode(payLoad, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def create_refresh_token() -> str:
+    # Opaque random string — NOT a JWT, harder to forge
+    return secrets.token_urlsafe(32)
 
 #--------------------
 # Importing Schema's
 #--------------------
 
-from app.schemas.user_schema import CreateUser, LoginSchema, LogoutSchema
+from app.schemas.user_schema import CreateUser, LoginSchema, LogoutSchema, RefreshTokenSchema
 from app.schemas.profile_schema import UserProfilePublic, UpdateProfile
 from app.schemas.product_schema import ProductCreate, ProductUpdate, ProductResponse
 from app.schemas.lost_and_found_schema import LostCreate, LostUpdate
@@ -32,13 +67,14 @@ from app.mongodb.connect import connectdb
 # Database Connections
 #------------------------
 
-#db for signup
+#DB Connections
 db = connectdb()
 signup_collection = db["signup"]
 profile_collection = db["user-profile"]
 product_collection = db["products"]
 lost_and_found_collection = db["lost_and_found"]
 lost_and_found_comment_collection = db["lost_and_found_comment"]
+refresh_token_collection = db["refresh_tokens"] 
 
 
 
@@ -57,28 +93,34 @@ SECURITY CODES
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000",
-        "https://studybazar.vercel.app",
+        "*"
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-#JWT TOKEN
-
-SECRET_KEY = "aakash-hitakshi-khushi"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 
 #SECURITY
 security = HTTPBearer()
 
 
-"""Server Started Message"""
+"""
+Server Started Message
+"""
 @app.on_event("startup")
 async def startup_event():
+    # Fast lookup + prevent duplicate active tokens
+    await run_in_threadpool(
+        refresh_token_collection.create_index, "token", unique=True
+    )
+    # TTL index — MongoDB auto-deletes expired tokens after 0 seconds past expires_at
+    await run_in_threadpool(
+        refresh_token_collection.create_index,
+        "expires_at",
+        expireAfterSeconds=0
+    )
     print("Server started successfully")
 
 @app.get("/")
@@ -175,33 +217,38 @@ async def sign_up(user: CreateUser):
         )
 
 
-#----------------------------
-# API FOR SIGN IN USER
-#----------------------------
 
+# ----------------------------
+# POST /auth/login
+# ----------------------------
 @app.post("/auth/login", status_code=status.HTTP_200_OK)
-async def login(user: LoginSchema):
+async def login(user: LoginSchema, response: Response):
 
-    # 1️. Normalize email
-    email = user.email.lower()
+    # --------------------------------------------------
+    # Normalize email
+    # --------------------------------------------------
+    email = user.email.strip().lower()
 
-    # 2️. Fetch user (indexed lookup → O(log n))
+    # --------------------------------------------------
+    # Fetch user
+    # --------------------------------------------------
     db_user = await run_in_threadpool(
         signup_collection.find_one,
         {"email": email}
     )
 
-    # 3️. Always verify password safely
-    if not db_user:
+    if db_user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password"
         )
 
-    # 4️. Verify bcrypt hash (constant time)
+    # --------------------------------------------------
+    # Verify password
+    # --------------------------------------------------
     password_valid = await run_in_threadpool(
         bcrypt.checkpw,
-        user.password.encode(),
+        user.password.encode("utf-8"),
         db_user["password"]
     )
 
@@ -211,35 +258,236 @@ async def login(user: LoginSchema):
             detail="Invalid email or password"
         )
 
-    # 5️. Generate JWT token
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    # --------------------------------------------------
+    # Prepare token data
+    # --------------------------------------------------
+    now = datetime.utcnow()
 
-    payload = {
-        "sub": str(db_user["_id"]),
-        "email": db_user["email"],
-        "exp": expire
-    }
+    user_id = str(db_user["_id"])
+    email = db_user["email"]
 
-    token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    access_token = create_access_token(
+        user_id=user_id,
+        email=email
+    )
 
+    refresh_token = create_refresh_token()
+
+    refresh_expiry = now + timedelta(
+        days=REFRESH_TOKEN_EXPIRE_DAYS
+    )
+
+    # --------------------------------------------------
+    # Save refresh token & update last login
+    # --------------------------------------------------
+    await asyncio.gather(
+
+        run_in_threadpool(
+            refresh_token_collection.insert_one,
+            {
+                "token": refresh_token,
+                "user_id": user_id,
+                "email": email,
+                "created_at": now,
+                "expires_at": refresh_expiry,
+                "is_revoked": False,
+            }
+        ),
+
+        run_in_threadpool(
+            signup_collection.update_one,
+            {"_id": db_user["_id"]},
+            {
+                "$set": {
+                    "last_login": now
+                }
+            }
+        )
+    )
+
+    # --------------------------------------------------
+    # Store refresh token in HttpOnly cookie
+    # --------------------------------------------------
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        secure=False,                 # True in production (HTTPS)
+        samesite="lax",               # Use "none" if frontend/backend are cross-site
+        path="/",
+        max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+        expires=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+    )
+
+    # --------------------------------------------------
+    # Return access token
+    # --------------------------------------------------
     return {
         "status": "ok",
-        "access_token": token,
-        "token_type": "bearer"
+        "access_token": access_token,
     }
 
 
+# ----------------------------
+# POST /auth/refresh
+# ----------------------------
+@app.post("/auth/refresh", status_code=status.HTTP_200_OK)
+async def refresh(request: Request, response: Response):
 
-#----------------------------
-# API FOR LOG OUT
-#----------------------------
+    # --------------------------------------------------
+    # Get refresh token from HttpOnly cookie
+    # --------------------------------------------------
+    refresh_token = request.cookies.get("refresh_token")
+
+    if not refresh_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token missing"
+        )
+
+    # --------------------------------------------------
+    # Fetch refresh token from database
+    # --------------------------------------------------
+    token_doc = await run_in_threadpool(
+        refresh_token_collection.find_one,
+        {"token": refresh_token}
+    )
+
+    if token_doc is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token"
+        )
+
+    # --------------------------------------------------
+    # Validate refresh token
+    # --------------------------------------------------
+    if token_doc["is_revoked"]:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token revoked"
+        )
+
+    if token_doc["expires_at"] < datetime.utcnow():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token expired"
+        )
+
+    # --------------------------------------------------
+    # Revoke current refresh token
+    # --------------------------------------------------
+    await run_in_threadpool(
+        refresh_token_collection.update_one,
+        {"_id": token_doc["_id"]},
+        {
+            "$set": {
+                "is_revoked": True
+            }
+        }
+    )
+
+    # --------------------------------------------------
+    # Generate new token pair
+    # --------------------------------------------------
+    now = datetime.utcnow()
+
+    user_id = str(token_doc["user_id"])
+    email = token_doc["email"]
+
+    access_token = create_access_token(
+        user_id=user_id,
+        email=email
+    )
+
+    new_refresh_token = create_refresh_token()
+
+    refresh_expiry = now + timedelta(
+        days=REFRESH_TOKEN_EXPIRE_DAYS
+    )
+
+    # --------------------------------------------------
+    # Store new refresh token
+    # --------------------------------------------------
+    await run_in_threadpool(
+        refresh_token_collection.insert_one,
+        {
+            "token": new_refresh_token,
+            "user_id": user_id,
+            "email": email,
+            "created_at": now,
+            "expires_at": refresh_expiry,
+            "is_revoked": False,
+        }
+    )
+
+    # --------------------------------------------------
+    # Replace refresh token cookie
+    # --------------------------------------------------
+    response.set_cookie(
+        key="refresh_token",
+        value=new_refresh_token,
+        httponly=True,
+        secure=False,                 # True in production (HTTPS)
+        samesite="lax",               # Use "none" if frontend/backend are cross-site
+        path="/",
+        max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+        expires=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+    )
+
+    # --------------------------------------------------
+    # Return new access token
+    # --------------------------------------------------
+    return {
+        "status": "ok",
+        "access_token": access_token,
+    }
 
 
+# ----------------------------
+# POST /auth/logout
+# ----------------------------
 @app.post("/auth/logout", status_code=status.HTTP_200_OK)
-async def logout():
-    return {"status": "ok", "message": "Logged out successfully"}
+async def logout(request: Request, response: Response):
 
+    # --------------------------------------------------
+    # Get refresh token from HttpOnly cookie
+    # --------------------------------------------------
+    refresh_token = request.cookies.get("refresh_token")
 
+    # --------------------------------------------------
+    # Revoke refresh token (if present)
+    # --------------------------------------------------
+    if refresh_token:
+
+        await run_in_threadpool(
+            refresh_token_collection.update_one,
+            {"token": refresh_token},
+            {
+                "$set": {
+                    "is_revoked": True
+                }
+            }
+        )
+
+    # --------------------------------------------------
+    # Remove refresh token cookie
+    # --------------------------------------------------
+    response.delete_cookie(
+        key="refresh_token",
+        path="/",
+        httponly=True,
+        secure=False,          # True in production (HTTPS)
+        samesite="lax",
+    )
+
+    # --------------------------------------------------
+    # Return response
+    # --------------------------------------------------
+    return {
+        "status": "ok",
+        "message": "Logged out successfully"
+    }
 
 #----------------------------
 # API FOR GET MY INFORMATION
@@ -249,33 +497,25 @@ async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     token = credentials.credentials
-
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = payload.get("sub")
 
+        # Reject refresh tokens being used as access tokens
+        if payload.get("type") != "access":
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token type")
+
+        user_id = payload.get("sub")
         if not user_id:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token"
-            )
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
 
     except JWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token"
-        )
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
 
     db_user = await run_in_threadpool(
-        signup_collection.find_one,
-        {"_id": ObjectId(user_id)}
+        signup_collection.find_one, {"_id": ObjectId(user_id)}
     )
-
     if not db_user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found"
-        )
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User not found")
 
     return db_user
 
