@@ -12,6 +12,7 @@ from bson.errors import InvalidId
 from pydantic import BaseModel, EmailStr, field_validator
 from jose import jwt, JWTError
 from fastapi.concurrency import run_in_threadpool
+import logging
 import secrets
 import bcrypt
 import asyncio
@@ -84,6 +85,11 @@ App Created
 app = FastAPI()
 
 
+"""
+Logging Configuration
+"""
+logging.basicConfig(level=logging.INFO)
+
 
 """
 SECURITY CODES
@@ -93,13 +99,13 @@ SECURITY CODES
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "*"
+        "http://localhost:3000",
+        "https://studybazar.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 
 #SECURITY
@@ -312,11 +318,12 @@ async def login(user: LoginSchema, response: Response):
         key="refresh_token",
         value=refresh_token,
         httponly=True,
-        secure=False,                 # True in production (HTTPS)
-        samesite="lax",               # Use "none" if frontend/backend are cross-site
+        secure=True,  # Must be True in production (HTTPS)
+        samesite="none",  # Required for cross-site requests
         path="/",
         max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
         expires=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+        domain=".railway.app",  # Add this if backend is on railway
     )
 
     # --------------------------------------------------
@@ -333,11 +340,16 @@ async def login(user: LoginSchema, response: Response):
 # ----------------------------
 @app.post("/auth/refresh", status_code=status.HTTP_200_OK)
 async def refresh(request: Request, response: Response):
-
+    # Log request details for debugging - with null safety
+    client_host = request.client.host if request.client else "unknown"
+    logging.info(f"Refresh request from: {client_host}")
+    logging.info(f"Cookies: {request.cookies}")
+    
     # --------------------------------------------------
     # Get refresh token from HttpOnly cookie
     # --------------------------------------------------
     refresh_token = request.cookies.get("refresh_token")
+    logging.info(f"Refresh token present: {bool(refresh_token)}")
 
     if not refresh_token:
         raise HTTPException(
@@ -354,6 +366,7 @@ async def refresh(request: Request, response: Response):
     )
 
     if token_doc is None:
+        logging.warning(f"Invalid refresh token used from: {client_host}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid refresh token"
@@ -363,12 +376,14 @@ async def refresh(request: Request, response: Response):
     # Validate refresh token
     # --------------------------------------------------
     if token_doc["is_revoked"]:
+        logging.warning(f"Revoked refresh token used from: {client_host}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Refresh token revoked"
         )
 
     if token_doc["expires_at"] < datetime.utcnow():
+        logging.warning(f"Expired refresh token used from: {client_host}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Refresh token expired"
@@ -380,11 +395,7 @@ async def refresh(request: Request, response: Response):
     await run_in_threadpool(
         refresh_token_collection.update_one,
         {"_id": token_doc["_id"]},
-        {
-            "$set": {
-                "is_revoked": True
-            }
-        }
+        {"$set": {"is_revoked": True}}
     )
 
     # --------------------------------------------------
@@ -428,16 +439,18 @@ async def refresh(request: Request, response: Response):
         key="refresh_token",
         value=new_refresh_token,
         httponly=True,
-        secure=False,                 # True in production (HTTPS)
-        samesite="lax",               # Use "none" if frontend/backend are cross-site
+        secure=True,
+        samesite="none",
         path="/",
         max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
         expires=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+        domain=".railway.app",  # ADD THIS - matches login endpoint
     )
 
     # --------------------------------------------------
     # Return new access token
     # --------------------------------------------------
+    logging.info(f"Refresh successful for user: {email}")
     return {
         "status": "ok",
         "access_token": access_token,
@@ -477,8 +490,8 @@ async def logout(request: Request, response: Response):
         key="refresh_token",
         path="/",
         httponly=True,
-        secure=False,          # True in production (HTTPS)
-        samesite="lax",
+        secure=True,          # True in production (HTTPS)
+        samesite="none",
     )
 
     # --------------------------------------------------
