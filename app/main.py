@@ -1,12 +1,9 @@
-#importing dependencies
-import email
-
-from fastapi import FastAPI, Depends, status, Query
-from fastapi.security import HTTPBearer,  HTTPAuthorizationCredentials
+# importing dependencies
+from fastapi import FastAPI, Depends, status, Query, APIRouter, HTTPException
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from fastapi import Response, Request
-from fastapi import APIRouter, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
@@ -18,103 +15,94 @@ import logging
 import secrets
 import bcrypt
 import asyncio
+import email
 import re
 import os
 
-
-
-#--------------------
-# Importing evironment variables
-#--------------------
+# --------------------
+# Importing environment variables
+# --------------------
 load_dotenv()
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = os.getenv("ALGORITHM")
 ACCESS_TOKEN_EXPIRE_MINUTES = 15
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 
-
-#--------------------
-# Importing Schema's
-#--------------------
-def create_access_token(user_id: str, email:str) -> str:
-    expire = datetime.utcnow() + timedelta(ACCESS_TOKEN_EXPIRE_MINUTES)
-    payLoad = {
+# --------------------
+# JWT Functions
+# --------------------
+def create_access_token(user_id: str, email: str) -> str:
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    payload = {
         "sub": user_id,
         "email": email,
         "exp": expire,
         "type": "access"
     }
-    return jwt.encode(payLoad, SECRET_KEY, algorithm=ALGORITHM)
-
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 def create_refresh_token() -> str:
     # Opaque random string — NOT a JWT, harder to forge
     return secrets.token_urlsafe(32)
 
-#--------------------
-# Importing Schema's
-#--------------------
-
+# --------------------
+# Importing Schemas
+# --------------------
 from app.schemas.user_schema import CreateUser, LoginSchema, LogoutSchema, RefreshTokenSchema
 from app.schemas.profile_schema import UserProfilePublic, UpdateProfile
 from app.schemas.product_schema import ProductCreate, ProductUpdate, ProductResponse
 from app.schemas.lost_and_found_schema import LostCreate, LostUpdate
 
-#--------------------
+# --------------------
 # Importing Database
-#--------------------
+# --------------------
 from app.mongodb.connect import connectdb
 
-
-#------------------------
+# --------------------
 # Database Connections
-#------------------------
-
-#DB Connections
+# --------------------
 db = connectdb()
 signup_collection = db["signup"]
 profile_collection = db["user-profile"]
 product_collection = db["products"]
 lost_and_found_collection = db["lost_and_found"]
 lost_and_found_comment_collection = db["lost_and_found_comment"]
-refresh_token_collection = db["refresh_tokens"] 
-
-
+refresh_token_collection = db["refresh_tokens"]
 
 """
 App Created
 """
 app = FastAPI()
 
-
 """
 Logging Configuration
 """
 logging.basicConfig(level=logging.INFO)
 
-
 """
 SECURITY CODES
 """
-
 # CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
         "https://studybazar.vercel.app",
-        "https://studybazar.vercel.app",  # Add with and without www
-        "https://*.vercel.app",  # Wildcard for preview deployments
+        "https://studybazar.vercel.app",
+        "https://*.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Set-Cookie"],  # Important for cookies
+    expose_headers=["Set-Cookie"],
 )
 
-
-#SECURITY
+# SECURITY
 security = HTTPBearer()
+
+
+
+
 
 
 """
@@ -139,362 +127,17 @@ def StartServer():
     return {"message": "Server is running successfully"}
 
 
-"""
-All the APIS for AUTHENTICATION
---
-| Method | Endpoint             | Purpose                    |
-| ------ | -------------------- | -------------------------- |
-| POST   | `/auth/signup`       | Create new student account | done
-| POST   | `/auth/login`        | Login and generate JWT     | done
-| POST   | `/auth/logout`       | Logout user                | done
-| GET    | `/auth/me`           | Get current logged-in user | done
-| POST   | `/auth/refresh`      | Refresh access token       |  
-| POST   | `/auth/verify-email` | Verify college email       |
+# --------------------
+# Importing routers
+# --------------------
+from app.routers import auth
 
-"""
-
-#----------------------------
-# Create new student account
-#----------------------------
-
-@app.post("/auth/signup", status_code=status.HTTP_201_CREATED)
-async def sign_up(user: CreateUser):
-
-    from fastapi.concurrency import run_in_threadpool
-    from datetime import datetime
-
-    email = user.email.lower()
-
-    if user.password != user.confirm_password:
-        raise HTTPException(
-            status_code=400,
-            detail="Passwords do not match"
-        )
-
-    existing_user = await run_in_threadpool(
-        signup_collection.find_one,
-        {"$or": [{"email": email}, {"phone": user.phone}]}
-    )
-
-    if existing_user:
-        if existing_user["email"] == email:
-            raise HTTPException(409, "Email already registered")
-        else:
-            raise HTTPException(409, "Phone already registered")
-
-    hashed_pw = await run_in_threadpool(
-        bcrypt.hashpw, user.password.encode(), bcrypt.gensalt(rounds=10)
-    )
-
-    new_user = {
-        "name": user.name,
-        "email": email,
-        "password": hashed_pw,
-        "campus": user.campus,
-        "phone": user.phone,
-        "year": user.year,
-        "created_at": datetime.utcnow(),
-        "updated_at": datetime.utcnow(),
-    }
-
-    try:
-        result = await run_in_threadpool(signup_collection.insert_one, new_user)
-
-        profile = {
-            "_id": result.inserted_id,
-            "name": user.name,
-            "email": email,
-            "campus": user.campus,
-            "phone": user.phone,
-            "year": user.year,
-            "created_at": datetime.utcnow(),
-        }
-
-        profile_result = await run_in_threadpool(
-            profile_collection.insert_one,
-            profile
-        )
-
-        return {
-            "status": "ok",
-            "user_id": str(result.inserted_id),
-            "profile_id": str(profile_result.inserted_id)
-        }
-
-    except DuplicateKeyError:
-        raise HTTPException(
-            status_code=409,
-            detail="Email or phone already registered"
-        )
+# Include the router
+app.include_router(auth.router)
 
 
 
-# ----------------------------
-# POST /auth/login
-# ----------------------------
-@app.post("/auth/login", status_code=status.HTTP_200_OK)
-async def login(user: LoginSchema, response: Response):
-    email = user.email.strip().lower()
-    
-    db_user = await run_in_threadpool(
-        signup_collection.find_one,
-        {"email": email}
-    )
 
-    if db_user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password"
-        )
-
-    password_valid = await run_in_threadpool(
-        bcrypt.checkpw,
-        user.password.encode("utf-8"),
-        db_user["password"]
-    )
-
-    if not password_valid:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password"
-        )
-
-    now = datetime.utcnow()
-    user_id = str(db_user["_id"])
-    email = db_user["email"]
-
-    access_token = create_access_token(
-        user_id=user_id,
-        email=email
-    )
-
-    refresh_token = create_refresh_token()
-    refresh_expiry = now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-
-    # Save refresh token
-    await asyncio.gather(
-        run_in_threadpool(
-            refresh_token_collection.insert_one,
-            {
-                "token": refresh_token,
-                "user_id": user_id,
-                "email": email,
-                "created_at": now,
-                "expires_at": refresh_expiry,
-                "is_revoked": False,
-            }
-        ),
-        run_in_threadpool(
-            signup_collection.update_one,
-            {"_id": db_user["_id"]},
-            {"$set": {"last_login": now}}
-        )
-    )
-
-    # Set cookie - WITHOUT domain for now
-    response.set_cookie(
-        key="refresh_token",
-        value=refresh_token,
-        httponly=True,
-        secure=True,  # True in production
-        samesite="none",  # Required for cross-site
-        path="/",
-        max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
-        expires=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
-        # domain=".railway.app",  # TEMPORARILY REMOVED
-    )
-
-    logging.info(f"Login successful for: {email}")
-    logging.info(f"Refresh token set: {refresh_token[:10]}...")
-
-    return {
-        "status": "ok",
-        "access_token": access_token,
-    }
-
-# ----------------------------
-# POST /auth/refresh
-# ----------------------------
-@app.post("/auth/refresh", status_code=status.HTTP_200_OK)
-async def refresh(request: Request, response: Response):
-    # Log request details for debugging - with null safety
-    client_host = request.client.host if request.client else "unknown"
-    logging.info(f"Refresh request from: {client_host}")
-    logging.info(f"Cookies: {request.cookies}")
-    
-    # --------------------------------------------------
-    # Get refresh token from HttpOnly cookie
-    # --------------------------------------------------
-    refresh_token = request.cookies.get("refresh_token")
-    logging.info(f"Refresh token present: {bool(refresh_token)}")
-
-    if not refresh_token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh token missing"
-        )
-
-    # --------------------------------------------------
-    # Fetch refresh token from database
-    # --------------------------------------------------
-    token_doc = await run_in_threadpool(
-        refresh_token_collection.find_one,
-        {"token": refresh_token}
-    )
-
-    if token_doc is None:
-        logging.warning(f"Invalid refresh token used from: {client_host}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid refresh token"
-        )
-
-    # --------------------------------------------------
-    # Validate refresh token
-    # --------------------------------------------------
-    if token_doc["is_revoked"]:
-        logging.warning(f"Revoked refresh token used from: {client_host}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh token revoked"
-        )
-
-    if token_doc["expires_at"] < datetime.utcnow():
-        logging.warning(f"Expired refresh token used from: {client_host}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh token expired"
-        )
-
-    # --------------------------------------------------
-    # Revoke current refresh token
-    # --------------------------------------------------
-    await run_in_threadpool(
-        refresh_token_collection.update_one,
-        {"_id": token_doc["_id"]},
-        {"$set": {"is_revoked": True}}
-    )
-
-    # --------------------------------------------------
-    # Generate new token pair
-    # --------------------------------------------------
-    now = datetime.utcnow()
-
-    user_id = str(token_doc["user_id"])
-    email = token_doc["email"]
-
-    access_token = create_access_token(
-        user_id=user_id,
-        email=email
-    )
-
-    new_refresh_token = create_refresh_token()
-
-    refresh_expiry = now + timedelta(
-        days=REFRESH_TOKEN_EXPIRE_DAYS
-    )
-
-    # --------------------------------------------------
-    # Store new refresh token
-    # --------------------------------------------------
-    await run_in_threadpool(
-        refresh_token_collection.insert_one,
-        {
-            "token": new_refresh_token,
-            "user_id": user_id,
-            "email": email,
-            "created_at": now,
-            "expires_at": refresh_expiry,
-            "is_revoked": False,
-        }
-    )
-
-    # --------------------------------------------------
-    # Replace refresh token cookie
-    # --------------------------------------------------
-    response.set_cookie(
-        key="refresh_token",
-        value=new_refresh_token,
-        httponly=True,
-        secure=True,
-        samesite="none",
-        path="/",
-        max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
-        expires=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
-        # domain=".railway.app",  # ADD THIS - matches login endpoint
-    )
-
-    # --------------------------------------------------
-    # Return new access token
-    # --------------------------------------------------
-    logging.info(f"Refresh successful for user: {email}")
-    return {
-        "status": "ok",
-        "access_token": access_token,
-    }
-
-
-
-# ----------------------------
-# get /auth/debug-cookies
-# ----------------------------
-
-@app.get("/auth/debug-cookies")
-async def debug_cookies(request: Request):
-    """Debug endpoint to check what cookies are being received."""
-    return {
-        "cookies": dict(request.cookies),
-        "has_refresh_token": "refresh_token" in request.cookies,
-        "all_headers": dict(request.headers),
-        "client_host": request.client.host if request.client else "unknown",
-        "cookie_header": request.headers.get("cookie"),
-    }
-
-
-# ----------------------------
-# POST /auth/logout
-# ----------------------------
-@app.post("/auth/logout", status_code=status.HTTP_200_OK)
-async def logout(request: Request, response: Response):
-
-    # --------------------------------------------------
-    # Get refresh token from HttpOnly cookie
-    # --------------------------------------------------
-    refresh_token = request.cookies.get("refresh_token")
-
-    # --------------------------------------------------
-    # Revoke refresh token (if present)
-    # --------------------------------------------------
-    if refresh_token:
-
-        await run_in_threadpool(
-            refresh_token_collection.update_one,
-            {"token": refresh_token},
-            {
-                "$set": {
-                    "is_revoked": True
-                }
-            }
-        )
-
-    # --------------------------------------------------
-    # Remove refresh token cookie
-    # --------------------------------------------------
-    response.delete_cookie(
-        key="refresh_token",
-        path="/",
-        httponly=True,
-        secure=True,          # True in production (HTTPS)
-        samesite="none",
-    )
-
-    # --------------------------------------------------
-    # Return response
-    # --------------------------------------------------
-    return {
-        "status": "ok",
-        "message": "Logged out successfully"
-    }
 
 #----------------------------
 # API FOR GET MY INFORMATION
