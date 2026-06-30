@@ -1,4 +1,6 @@
 #importing dependencies
+import email
+
 from fastapi import FastAPI, Depends, status, Query
 from fastapi.security import HTTPBearer,  HTTPAuthorizationCredentials
 from datetime import datetime, timezone, timedelta
@@ -101,10 +103,13 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "https://studybazar.vercel.app",
+        "https://studybazar.vercel.app",  # Add with and without www
+        "https://*.vercel.app",  # Wildcard for preview deployments
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Set-Cookie"],  # Important for cookies
 )
 
 
@@ -229,15 +234,8 @@ async def sign_up(user: CreateUser):
 # ----------------------------
 @app.post("/auth/login", status_code=status.HTTP_200_OK)
 async def login(user: LoginSchema, response: Response):
-
-    # --------------------------------------------------
-    # Normalize email
-    # --------------------------------------------------
     email = user.email.strip().lower()
-
-    # --------------------------------------------------
-    # Fetch user
-    # --------------------------------------------------
+    
     db_user = await run_in_threadpool(
         signup_collection.find_one,
         {"email": email}
@@ -249,9 +247,6 @@ async def login(user: LoginSchema, response: Response):
             detail="Invalid email or password"
         )
 
-    # --------------------------------------------------
-    # Verify password
-    # --------------------------------------------------
     password_valid = await run_in_threadpool(
         bcrypt.checkpw,
         user.password.encode("utf-8"),
@@ -264,11 +259,7 @@ async def login(user: LoginSchema, response: Response):
             detail="Invalid email or password"
         )
 
-    # --------------------------------------------------
-    # Prepare token data
-    # --------------------------------------------------
     now = datetime.utcnow()
-
     user_id = str(db_user["_id"])
     email = db_user["email"]
 
@@ -278,16 +269,10 @@ async def login(user: LoginSchema, response: Response):
     )
 
     refresh_token = create_refresh_token()
+    refresh_expiry = now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
 
-    refresh_expiry = now + timedelta(
-        days=REFRESH_TOKEN_EXPIRE_DAYS
-    )
-
-    # --------------------------------------------------
-    # Save refresh token & update last login
-    # --------------------------------------------------
+    # Save refresh token
     await asyncio.gather(
-
         run_in_threadpool(
             refresh_token_collection.insert_one,
             {
@@ -299,41 +284,33 @@ async def login(user: LoginSchema, response: Response):
                 "is_revoked": False,
             }
         ),
-
         run_in_threadpool(
             signup_collection.update_one,
             {"_id": db_user["_id"]},
-            {
-                "$set": {
-                    "last_login": now
-                }
-            }
+            {"$set": {"last_login": now}}
         )
     )
 
-    # --------------------------------------------------
-    # Store refresh token in HttpOnly cookie
-    # --------------------------------------------------
+    # Set cookie - WITHOUT domain for now
     response.set_cookie(
         key="refresh_token",
         value=refresh_token,
         httponly=True,
-        secure=True,  # Must be True in production (HTTPS)
-        samesite="none",  # Required for cross-site requests
+        secure=True,  # True in production
+        samesite="none",  # Required for cross-site
         path="/",
         max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
         expires=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
-        domain=".railway.app",  # Add this if backend is on railway
+        # domain=".railway.app",  # TEMPORARILY REMOVED
     )
 
-    # --------------------------------------------------
-    # Return access token
-    # --------------------------------------------------
+    logging.info(f"Login successful for: {email}")
+    logging.info(f"Refresh token set: {refresh_token[:10]}...")
+
     return {
         "status": "ok",
         "access_token": access_token,
     }
-
 
 # ----------------------------
 # POST /auth/refresh
@@ -444,7 +421,7 @@ async def refresh(request: Request, response: Response):
         path="/",
         max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
         expires=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
-        domain=".railway.app",  # ADD THIS - matches login endpoint
+        # domain=".railway.app",  # ADD THIS - matches login endpoint
     )
 
     # --------------------------------------------------
@@ -454,6 +431,23 @@ async def refresh(request: Request, response: Response):
     return {
         "status": "ok",
         "access_token": access_token,
+    }
+
+
+
+# ----------------------------
+# get /auth/debug-cookies
+# ----------------------------
+
+@app.get("/auth/debug-cookies")
+async def debug_cookies(request: Request):
+    """Debug endpoint to check what cookies are being received."""
+    return {
+        "cookies": dict(request.cookies),
+        "has_refresh_token": "refresh_token" in request.cookies,
+        "all_headers": dict(request.headers),
+        "client_host": request.client.host if request.client else "unknown",
+        "cookie_header": request.headers.get("cookie"),
     }
 
 
