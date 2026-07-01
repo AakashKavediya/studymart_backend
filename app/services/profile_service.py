@@ -47,7 +47,7 @@ from app.main import (
 # ==========================
 # Schema Imports
 # ==========================
-from app.schemas.profile_schema import UserProfilePublic, UpdatePassword, UpdateProfile,UserPublicProfile
+from app.schemas.profile_schema import ProfileImageUpload, UserProfilePublic, UpdatePassword, UpdateProfile,UserPublicProfile
 
 
 
@@ -362,3 +362,79 @@ async def get_user_profile_service(user_id: str):
         })
     
     return merged_data
+
+
+
+# ==========================================================
+# Upload Profile Image Service
+# ==========================================================
+
+async def upload_profile_image_service(
+    image_data: ProfileImageUpload,
+    current_user: dict
+):
+    """
+    Upload profile image URL from Cloudinary.
+    """
+    user_id = current_user["_id"]
+    image_url = str(image_data.profile_image)
+    
+    # Fetch existing profile
+    profile = await run_in_threadpool(
+        profile_collection.find_one,
+        {"_id": user_id}
+    )
+    
+    # If no profile exists, create one
+    if not profile:
+        profile_data = {
+            "_id": user_id,
+            "name": current_user.get("name"),
+            "email": current_user.get("email"),
+            "phone": current_user.get("phone"),
+            "campus": current_user.get("campus"),
+            "year": current_user.get("year"),
+            "branch": current_user.get("branch"),
+            "bio": current_user.get("bio"),
+            "profile_image": image_url,
+            "skills": [],
+            "social_links": {},
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow(),
+        }
+        await run_in_threadpool(
+            profile_collection.insert_one,
+            profile_data
+        )
+        profile = profile_data
+    else:
+        # Update existing profile with new image
+        await run_in_threadpool(
+            profile_collection.update_one,
+            {"_id": user_id},
+            {
+                "$set": {
+                    "profile_image": image_url,
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+    
+    # Fetch updated profile
+    updated_profile = await run_in_threadpool(
+        profile_collection.find_one,
+        {"_id": user_id}
+    )
+    
+    # Convert ObjectId to string
+    if updated_profile and "_id" in updated_profile:
+        updated_profile["_id"] = str(updated_profile["_id"])
+    
+    return {
+        "status": "ok",
+        "message": "Profile image updated successfully",
+        "user": updated_profile
+    }
+
+
+

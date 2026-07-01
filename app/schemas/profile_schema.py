@@ -34,6 +34,7 @@ class UserProfilePublic(BaseModel):
         populate_by_name = True
 
 
+
 class UpdateProfile(BaseModel):
     name: Optional[str] = None
     phone: Optional[str] = None
@@ -44,6 +45,7 @@ class UpdateProfile(BaseModel):
     bio: Optional[str] = None
     skills: Optional[List[str]] = None
     social_links: Optional[Dict[str, str]] = None
+    
 
 
 class UpdatePassword(BaseModel):
@@ -91,6 +93,15 @@ class UserPublicProfile(BaseModel):
     following_count: Optional[int] = 0
     is_verified: Optional[bool] = False
     created_at: datetime
+    
+    class Config:
+        populate_by_name = True
+
+
+
+# New Schema for Profile Image Upload
+class ProfileImageUpload(BaseModel):
+    profile_image: HttpUrl  # Cloudinary URL
     
     class Config:
         populate_by_name = True

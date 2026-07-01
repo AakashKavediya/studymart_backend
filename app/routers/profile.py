@@ -6,6 +6,7 @@ USER PROFILE APIs
 | GET    | `/users/{user_id}`     | View another user's public profile     | Done |
 | PUT    | `/users/profile`       | Update own profile                     | Done |
 | GET    | `/users/products`      | Get all products listed by the user    | 🚧 Pending |
+| POST   | `/users/profile_image` | Upload profile image                   | 🚧 Pending |
 | GET    | `/users/stats`         | Get user statistics                    | 🚧 Pending |
 | PUT    | `/users/password`      | Change account password                | Done |
 | DELETE | `/users/account`       | Delete user account                    | Done |
@@ -16,11 +17,10 @@ from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
 from app.utils.user import get_current_user
-from app.schemas.profile_schema import UpdatePassword, UpdateProfile
+from app.schemas.profile_schema import UpdatePassword, UpdateProfile, ProfileImageUpload
 from app.schemas.user_schema import CreateUser, LoginSchema
 from app.services.auth_service import get_current_user_profile
-from app.services.profile_service import update_user_profile_service, update_password_service, delete_account_service, get_user_profile_service
-
+from app.services.profile_service import update_user_profile_service, update_password_service, delete_account_service, get_user_profile_service, upload_profile_image_service
 
 from app.mongodb.connect import connectdb
 db = connectdb()
@@ -63,26 +63,8 @@ async def delete_account(
 
 
 # ==========================================================
-# Search User Router
+# Search User by Name Router
 # ==========================================================
-
-# @router.get(
-#     "/{user_id}",
-#     status_code=status.HTTP_200_OK,
-# )
-# async def get_user_profile(user_id: str):
-#     """
-#     Get public profile of a user.
-#     - No authentication required
-#     - Returns public user data
-#     """
-#     user_profile = await get_user_profile_service(user_id)
-    
-#     return {
-#         "status": "ok",
-#         "user": user_profile
-#     }
-
 
 
 # 1. Search route (specific, no path params)
@@ -120,6 +102,10 @@ async def search_users(
         "count": len(results)
     }
 
+# ==========================================================
+# Search User by ID Router
+# ==========================================================
+
 
 # 2. Get user by ID route (parameterized)
 @router.get(
@@ -143,3 +129,25 @@ async def get_user_profile(user_id: str):
         "status": "ok",
         "user": user_profile
     }
+
+# ==========================================================
+# Upload Profile Image Router
+# ==========================================================
+
+
+@router.post("/profile_image", status_code=status.HTTP_200_OK)
+async def upload_profile_image(
+    image_data: ProfileImageUpload,
+    current_user = Depends(get_current_user)
+):
+    """
+    Upload profile image URL from Cloudinary.
+    
+    Request body:
+    {
+        "profile_image": "https://res.cloudinary.com/..."
+    }
+    
+    Returns updated user profile with new image URL.
+    """
+    return await upload_profile_image_service(image_data, current_user)
