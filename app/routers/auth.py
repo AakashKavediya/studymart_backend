@@ -7,16 +7,16 @@ All the APIS for AUTHENTICATION
 | POST   | `/auth/signup`       | Create new student account | done
 | POST   | `/auth/login`        | Login and generate JWT     | done
 | POST   | `/auth/logout`       | Logout user                | done
-| GET    | `/auth/me`           | Get current logged-in user | done
-| POST   | `/auth/refresh`      | Refresh access token       |  
+| GET    | `/auth/me`           | Get current logged-in user | done 
+| POST   | `/auth/refresh`      | Refresh access token       | done
 | POST   | `/auth/verify-email` | Verify college email       |
 
 """
 
 
-from fastapi import APIRouter, Request, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from app.schemas.user_schema import CreateUser, LoginSchema
-from app.services.auth_service import login_user, sign_up, refresh_token_service, debug_cookies_service, logout
+from app.services.auth_service import login_user, sign_up, refresh_token_service, debug_cookies_service, logout, get_current_user_profile
 
 router = APIRouter(
     prefix="/auth",
@@ -101,3 +101,25 @@ async def logout_user(
     response: Response,
 ):
     return await logout(request, response)
+
+
+
+# ==========================================================
+# Current User Profile Service
+# ==========================================================
+
+
+@router.get(
+    "/me",
+    status_code=status.HTTP_200_OK,
+)
+async def get_me(
+    current_user = Depends(get_current_user_profile)
+):
+    """
+    Get the complete profile of the currently authenticated user.
+    """
+    return {
+        "status": "ok",
+        "user": current_user
+    }

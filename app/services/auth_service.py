@@ -8,7 +8,7 @@ All the APIS for AUTHENTICATION
 | POST   | `/auth/login`        | Login and generate JWT     | done
 | POST   | `/auth/logout`       | Logout user                | done
 | GET    | `/auth/me`           | Get current logged-in user | done
-| POST   | `/auth/refresh`      | Refresh access token       |  
+| POST   | `/auth/refresh`      | Refresh access token       | done
 | POST   | `/auth/verify-email` | Verify college email       |
 
 """
@@ -26,7 +26,7 @@ from datetime import datetime, timedelta
 # Third Party Imports
 # ==========================
 import bcrypt
-from fastapi import HTTPException, Response, status, Request
+from fastapi import Depends, HTTPException, Response, status, Request
 from fastapi.concurrency import run_in_threadpool
 
 # ==========================
@@ -35,6 +35,8 @@ from fastapi.concurrency import run_in_threadpool
 from app.mongodb.connect import connectdb
 from app.schemas.user_schema import LoginSchema, CreateUser
 from pymongo.errors import DuplicateKeyError
+from app.utils.user import get_current_user
+
 
 
 # Temporary imports
@@ -452,3 +454,80 @@ async def logout(request: Request, response: Response):
         "status": "ok",
         "message": "Logged out successfully"
     }
+
+
+
+
+
+# ==========================================================
+# Get Me Service
+# =========================================================
+
+
+async def get_current_user_profile(
+    current_user = Depends(get_current_user)
+):
+    """
+    Get complete profile data by merging signup and profile collections.
+    """
+    user_id = current_user["_id"]
+    
+    # -------------------------
+    # Fetch Profile from Profile Collection
+    # -------------------------
+    profile = await run_in_threadpool(
+        profile_collection.find_one,
+        {"_id": user_id}
+    )
+    
+    # If no profile exists, create one
+    if not profile:
+        # Create a basic profile from signup data
+        profile_data = {
+            "_id": user_id,
+            "name": current_user["name"],
+            "email": current_user["email"],
+            "campus": current_user.get("campus"),
+            "phone": current_user.get("phone"),
+            "year": current_user.get("year"),
+            "created_at": current_user.get("created_at", datetime.utcnow()),
+            "updated_at": datetime.utcnow(),
+        }
+        
+        await run_in_threadpool(
+            profile_collection.insert_one,
+            profile_data
+        )
+        
+        profile = profile_data
+    
+    # -------------------------
+    # Merge Data (Profile overrides Signup)
+    # -------------------------
+    merged_data = {
+        "_id": str(current_user["_id"]),
+        "name": profile.get("name") or current_user.get("name"),
+        "email": current_user.get("email"),
+        "phone": profile.get("phone") or current_user.get("phone"),
+        "campus": profile.get("campus") or current_user.get("campus"),
+        "year": profile.get("year") or current_user.get("year"),
+        "branch": profile.get("branch"),
+        "profile_image": profile.get("profile_image"),
+        "bio": profile.get("bio"),
+        "skills": profile.get("skills", []),
+        "location": profile.get("location"),
+        "social_links": profile.get("social_links"),
+        "rating": profile.get("rating", 0),
+        "total_reviews": profile.get("total_reviews", 0),
+        "products_sold_count": profile.get("products_sold_count", 0),
+        "active_listings_count": profile.get("active_listings_count", 0),
+        "followers_count": profile.get("followers_count", 0),
+        "following_count": profile.get("following_count", 0),
+        "is_verified": profile.get("is_verified", False),
+        "is_blocked": profile.get("is_blocked", False),
+        "created_at": profile.get("created_at") or current_user.get("created_at"),
+        "updated_at": profile.get("updated_at") or current_user.get("updated_at"),
+        "last_active": profile.get("last_active") or current_user.get("last_login"),
+    }
+    
+    return merged_data
