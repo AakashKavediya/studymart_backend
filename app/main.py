@@ -130,66 +130,20 @@ def StartServer():
 # --------------------
 # Importing routers
 # --------------------
-from app.routers import auth, profile
+from app.routers import auth, profile, follower
 
 # Include the router
 app.include_router(auth.router)
 app.include_router(profile.router)
+app.include_router(follower.router)
 
 
 
 
 
-#----------------------------
-# API FOR GET MY INFORMATION
-#----------------------------
-
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
-    token = credentials.credentials
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-
-        # Reject refresh tokens being used as access tokens
-        if payload.get("type") != "access":
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token type")
-
-        user_id = payload.get("sub")
-        if not user_id:
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
-
-    except JWTError:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
-
-    db_user = await run_in_threadpool(
-        signup_collection.find_one, {"_id": ObjectId(user_id)}
-    )
-    if not db_user:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User not found")
-
-    return db_user
 
 
 
-@app.get("/auth/me", status_code=status.HTTP_200_OK)
-async def get_me(current_user=Depends(get_current_user)):
-
-    user_info = {
-        "id": str(current_user["_id"]),
-        "name": current_user["name"],
-        "email": current_user["email"],
-        "year": current_user["year"],
-        "phone": current_user["phone"],
-        "campus": current_user["campus"],
-        "is_verified": current_user.get("is_verified", False),
-        "created_at": current_user.get("created_at"),
-    }
-
-    return {
-        "status": "ok",
-        "user": user_info
-    }
 
 
 """
@@ -206,176 +160,6 @@ USER PROFILE APIs
 | GET    | `/users/search`          | Search users          | Done
 
 """
-
-
-#----------------------------
-# API FOR SEARCH USER
-#----------------------------
-
-@app.get("/users/search")
-async def search_user(name: str):
-    profiles = await run_in_threadpool(
-        lambda: list(
-            profile_collection.find(
-                {"name": {"$regex": name, "$options": "i"}}
-            ).limit(20)
-        )
-    )
-
-    for p in profiles:
-        p["_id"] = str(p["_id"])
-
-    return {
-        "status": "ok",
-        "results": profiles
-    }
-
-
-
-
-#----------------------------
-# API FOR VIEW PUBIC PROFILE
-#----------------------------
-
-@app.get("/users/{user_id}")
-async def get_public_profile(user_id: str):
-
-    user = await run_in_threadpool(
-        profile_collection.find_one,
-        {"_id": ObjectId(user_id)}
-    )
-
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    user["_id"] = str(user["_id"])
-
-    return user
-
-
-
-
-#----------------------------
-# API FOR COMPLETE PROFILE LIST
-#----------------------------
-"""
-NOT WORKING PROPERLY
-INTERNAL SERVER ERROR
-
-"""
-
-@app.get("/users/profile_list")
-async def get_profile_list():
-
-    profiles = await run_in_threadpool(
-        lambda: list(
-            profile_collection.find({}, {"name": 1})
-        )
-    )
-
-    result = []
-
-    for p in profiles:
-        result.append({
-            "id": str(p["_id"]),
-            "name": p.get("name")
-        })
-
-    return {"status": "ok", "profiles": result}
-
-
-
-#----------------------------
-# API FOR UPDATE OWN PROFILE
-#----------------------------
-
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security)
-):
-
-    token = credentials.credentials
-
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = payload.get("sub")
-
-        if not user_id:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token"
-            )
-
-    except JWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token"
-        )
-
-    user = await run_in_threadpool(
-        profile_collection.find_one,
-        {"_id": ObjectId(user_id)}
-    )
-
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-
-    return user
-
-@app.put("/users/profile", status_code=status.HTTP_200_OK)
-async def update_my_profile(
-    profile: UpdateProfile,
-    current_user=Depends(get_current_user)
-):
-
-    user_id = current_user["_id"]
-
-    update_data = profile.dict(exclude_unset=True)
-
-    if not update_data:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No fields provided to update"
-        )
-
-    update_data["updated_at"] = datetime.utcnow()
-
-    result = await run_in_threadpool(
-        profile_collection.update_one,
-        {"_id": user_id},
-        {"$set": update_data}
-    )
-
-    if result.matched_count == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-
-    updated_user = await run_in_threadpool(
-        profile_collection.find_one,
-        {"_id": user_id}
-    )
-
-    updated_user["_id"] = str(updated_user["_id"])
-
-    return {
-        "status": "ok",
-        "user": updated_user
-    }
-
-
-
-#----------------------------
-# API FOR UPLOAD PROFILE IMAGE
-#----------------------------
-
-#DONE
-
-
-
 
 
 
@@ -404,40 +188,40 @@ Core Product Management
 #----------------------------
 
 
-@app.post("/products", status_code=201)
-async def post_product(
-    product: ProductCreate,
-    current_user = Depends(get_current_user)
-):
+# @app.post("/products", status_code=201)
+# async def post_product(
+#     product: ProductCreate,
+#     current_user = Depends(get_current_user)
+# ):
 
-    seller_id = current_user["_id"]
+#     seller_id = current_user["_id"]
 
-    product_info = {
-        "title": product.title,
-        "description": product.description,
-        "category": product.category,
-        "price": product.price,
-        "condition": product.condition,
-        "negotiable": product.negotiable,
-        "images": product.images,
-        "campus": product.campus,
-        "location": product.location,
+#     product_info = {
+#         "title": product.title,
+#         "description": product.description,
+#         "category": product.category,
+#         "price": product.price,
+#         "condition": product.condition,
+#         "negotiable": product.negotiable,
+#         "images": product.images,
+#         "campus": product.campus,
+#         "location": product.location,
 
-        "seller_id": seller_id,
+#         "seller_id": seller_id,
 
-        "status": "active",
-        "created_at": datetime.now()
-    }
+#         "status": "active",
+#         "created_at": datetime.now()
+#     }
 
-    result = await run_in_threadpool(
-        product_collection.insert_one,
-        product_info
-    )
+#     result = await run_in_threadpool(
+#         product_collection.insert_one,
+#         product_info
+#     )
 
-    return {
-        "status": "ok",
-        "product_id": str(result.inserted_id)
-    }
+#     return {
+#         "status": "ok",
+#         "product_id": str(result.inserted_id)
+#     }
 
 
 
@@ -450,40 +234,40 @@ async def post_product(
 #----------------------------
 
 
-@app.delete("/products/{product_id}", status_code=status.HTTP_200_OK)
-async def delete_product(
-    product_id: str,
-    current_user=Depends(get_current_user)
-):
+# @app.delete("/products/{product_id}", status_code=status.HTTP_200_OK)
+# async def delete_product(
+#     product_id: str,
+#     current_user=Depends(get_current_user)
+# ):
 
-    seller_id = current_user["_id"]
+#     seller_id = current_user["_id"]
 
-    try:
-        object_id = ObjectId(product_id)
-    except:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid product id"
-        )
+#     try:
+#         object_id = ObjectId(product_id)
+#     except:
+#         raise HTTPException(
+#             status_code=status.HTTP_400_BAD_REQUEST,
+#             detail="Invalid product id"
+#         )
 
-    result = await run_in_threadpool(
-        product_collection.delete_one,
-        {
-            "_id": object_id,
-            "seller_id": seller_id
-        }
-    )
+#     result = await run_in_threadpool(
+#         product_collection.delete_one,
+#         {
+#             "_id": object_id,
+#             "seller_id": seller_id
+#         }
+#     )
 
-    if result.deleted_count == 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Product not found or you are not the owner"
-        )
+#     if result.deleted_count == 0:
+#         raise HTTPException(
+#             status_code=status.HTTP_404_NOT_FOUND,
+#             detail="Product not found or you are not the owner"
+#         )
 
-    return {
-        "status": "ok",
-        "message": "Product deleted successfully"
-    }
+#     return {
+#         "status": "ok",
+#         "message": "Product deleted successfully"
+#     }
 
 
 
@@ -534,38 +318,38 @@ async def get_products(
 #----------------------------
 
 
-@app.get("/products/{product_id}", status_code=status.HTTP_200_OK)
-async def get_single_product(product_id: str):
+# @app.get("/products/{product_id}", status_code=status.HTTP_200_OK)
+# async def get_single_product(product_id: str):
 
-    # Validate ObjectId
-    try:
-        obj_id = ObjectId(product_id)
-    except InvalidId:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid product id"
-        )
+#     # Validate ObjectId
+#     try:
+#         obj_id = ObjectId(product_id)
+#     except InvalidId:
+#         raise HTTPException(
+#             status_code=status.HTTP_400_BAD_REQUEST,
+#             detail="Invalid product id"
+#         )
 
-    # Fetch product
-    product = await run_in_threadpool(
-        product_collection.find_one,
-        {"_id": obj_id}
-    )
+#     # Fetch product
+#     product = await run_in_threadpool(
+#         product_collection.find_one,
+#         {"_id": obj_id}
+#     )
 
-    if not product:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Product not found"
-        )
+#     if not product:
+#         raise HTTPException(
+#             status_code=status.HTTP_404_NOT_FOUND,
+#             detail="Product not found"
+#         )
 
-    # Convert ObjectIds to string
-    product["_id"] = str(product["_id"])
-    product["seller_id"] = str(product["seller_id"])
+#     # Convert ObjectIds to string
+#     product["_id"] = str(product["_id"])
+#     product["seller_id"] = str(product["seller_id"])
 
-    return {
-        "status": "ok",
-        "product": product
-    }
+#     return {
+#         "status": "ok",
+#         "product": product
+#     }
 
 
 
@@ -576,53 +360,53 @@ async def get_single_product(product_id: str):
 
 
 
-@app.put("/products/{product_id}", status_code=status.HTTP_200_OK)
-async def update_product(
-    product_id: str,
-    product: ProductUpdate,
-    current_user = Depends(get_current_user)
-):
+# @app.put("/products/{product_id}", status_code=status.HTTP_200_OK)
+# async def update_product(
+#     product_id: str,
+#     product: ProductUpdate,
+#     current_user = Depends(get_current_user)
+# ):
 
-    # Validate ID
-    try:
-        obj_id = ObjectId(product_id)
-    except InvalidId:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid product id"
-        )
+#     # Validate ID
+#     try:
+#         obj_id = ObjectId(product_id)
+#     except InvalidId:
+#         raise HTTPException(
+#             status_code=400,
+#             detail="Invalid product id"
+#         )
 
-    seller_id = current_user["_id"]
+#     seller_id = current_user["_id"]
 
-    update_data = product.dict(exclude_unset=True)
+#     update_data = product.dict(exclude_unset=True)
 
-    if not update_data:
-        raise HTTPException(
-            status_code=400,
-            detail="No fields provided to update"
-        )
+#     if not update_data:
+#         raise HTTPException(
+#             status_code=400,
+#             detail="No fields provided to update"
+#         )
 
-    update_data["updated_at"] = datetime.utcnow()
+#     update_data["updated_at"] = datetime.utcnow()
 
-    result = await run_in_threadpool(
-        product_collection.update_one,
-        {
-            "_id": obj_id,
-            "seller_id": seller_id
-        },
-        {"$set": update_data}
-    )
+#     result = await run_in_threadpool(
+#         product_collection.update_one,
+#         {
+#             "_id": obj_id,
+#             "seller_id": seller_id
+#         },
+#         {"$set": update_data}
+#     )
 
-    if result.matched_count == 0:
-        raise HTTPException(
-            status_code=404,
-            detail="Product not found or you are not the owner"
-        )
+#     if result.matched_count == 0:
+#         raise HTTPException(
+#             status_code=404,
+#             detail="Product not found or you are not the owner"
+#         )
 
-    return {
-        "status": "ok",
-        "message": "Product updated successfully"
-    }
+#     return {
+#         "status": "ok",
+#         "message": "Product updated successfully"
+#     }
 
 """
 PRODUCT (MARKETPLACE) APIs
@@ -787,36 +571,36 @@ Lost Items
 #----------------------------
 
 
-@app.post("/lost", status_code=201)
-async def create_lost_post(
-    post: LostCreate,
-    current_user=Depends(get_current_user)
-):
+# @app.post("/lost", status_code=201)
+# async def create_lost_post(
+#     post: LostCreate,
+#     current_user=Depends(get_current_user)
+# ):
 
-    lost_post = {
-        "title": post.title,
-        "description": post.description,
-        "category": post.category,
-        "location": post.location,
-        "campus": post.campus,
-        "contact_info": post.contact_info,
+#     lost_post = {
+#         "title": post.title,
+#         "description": post.description,
+#         "category": post.category,
+#         "location": post.location,
+#         "campus": post.campus,
+#         "contact_info": post.contact_info,
 
-        "user_id": current_user["_id"],
+#         "user_id": current_user["_id"],
 
-        "status": "active",
-        "created_at": datetime.utcnow(),
-        "updated_at": datetime.utcnow()
-    }
+#         "status": "active",
+#         "created_at": datetime.utcnow(),
+#         "updated_at": datetime.utcnow()
+#     }
 
-    result = await run_in_threadpool(
-        lost_and_found_collection.insert_one,
-        lost_post
-    )
+#     result = await run_in_threadpool(
+#         lost_and_found_collection.insert_one,
+#         lost_post
+#     )
 
-    return {
-        "status": "ok",
-        "lost_id": str(result.inserted_id)
-    }
+#     return {
+#         "status": "ok",
+#         "lost_id": str(result.inserted_id)
+#     }
 
 
 
@@ -891,36 +675,36 @@ async def get_single_lost_post(lost_id: str):
 #----------------------------
 
 
-@app.put("/lost/{lost_id}")
-async def update_lost_post(
-    lost_id: str,
-    data: LostUpdate,
-    current_user=Depends(get_current_user)
-):
+# @app.put("/lost/{lost_id}")
+# async def update_lost_post(
+#     lost_id: str,
+#     data: LostUpdate,
+#     current_user=Depends(get_current_user)
+# ):
 
-    update_data = data.dict(exclude_unset=True)
+#     update_data = data.dict(exclude_unset=True)
 
-    if not update_data:
-        raise HTTPException(400, "No fields to update")
+#     if not update_data:
+#         raise HTTPException(400, "No fields to update")
 
-    update_data["updated_at"] = datetime.utcnow()
+#     update_data["updated_at"] = datetime.utcnow()
 
-    result = await run_in_threadpool(
-        lost_and_found_collection.update_one,
-        {
-            "_id": ObjectId(lost_id),
-            "user_id": current_user["_id"]
-        },
-        {"$set": update_data}
-    )
+#     result = await run_in_threadpool(
+#         lost_and_found_collection.update_one,
+#         {
+#             "_id": ObjectId(lost_id),
+#             "user_id": current_user["_id"]
+#         },
+#         {"$set": update_data}
+#     )
 
-    if result.matched_count == 0:
-        raise HTTPException(
-            403,
-            "You are not allowed to edit this post"
-        )
+#     if result.matched_count == 0:
+#         raise HTTPException(
+#             403,
+#             "You are not allowed to edit this post"
+#         )
 
-    return {"status": "ok"}
+#     return {"status": "ok"}
 
 
 
@@ -928,27 +712,27 @@ async def update_lost_post(
 # API FOR DELETE LOST PRODUCTS
 #----------------------------
 
-@app.delete("/lost/{lost_id}")
-async def delete_lost_post(
-    lost_id: str,
-    current_user=Depends(get_current_user)
-):
+# @app.delete("/lost/{lost_id}")
+# async def delete_lost_post(
+#     lost_id: str,
+#     current_user=Depends(get_current_user)
+# ):
 
-    result = await run_in_threadpool(
-        lost_and_found_collection.delete_one,
-        {
-            "_id": ObjectId(lost_id),
-            "user_id": current_user["_id"]
-        }
-    )
+#     result = await run_in_threadpool(
+#         lost_and_found_collection.delete_one,
+#         {
+#             "_id": ObjectId(lost_id),
+#             "user_id": current_user["_id"]
+#         }
+#     )
 
-    if result.deleted_count == 0:
-        raise HTTPException(
-            403,
-            "You are not allowed to delete this post"
-        )
+#     if result.deleted_count == 0:
+#         raise HTTPException(
+#             403,
+#             "You are not allowed to delete this post"
+#         )
 
-    return {"status": "ok", "message": "Post deleted"}
+#     return {"status": "ok", "message": "Post deleted"}
 
 
 

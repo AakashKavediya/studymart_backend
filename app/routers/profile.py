@@ -20,7 +20,7 @@ from app.utils.user import get_current_user
 from app.schemas.profile_schema import UpdatePassword, UpdateProfile, ProfileImageUpload
 from app.schemas.user_schema import CreateUser, LoginSchema
 from app.services.auth_service import get_current_user_profile
-from app.services.profile_service import update_user_profile_service, update_password_service, delete_account_service, get_user_profile_service, upload_profile_image_service
+from app.services.profile_service import update_user_profile_service, update_password_service, delete_account_service, get_user_profile_service, upload_profile_image_service, view_public_profile_service, get_user_stats_service, get_or_create_user_profile_service
 
 from app.mongodb.connect import connectdb
 db = connectdb()
@@ -151,3 +151,49 @@ async def upload_profile_image(
     Returns updated user profile with new image URL.
     """
     return await upload_profile_image_service(image_data, current_user)
+
+
+# ==========================================================
+# View Public Profile Router
+# ==========================================================
+
+
+@router.get(
+    "/public/{user_id}",
+    status_code=status.HTTP_200_OK,
+)
+async def view_public_profile(user_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    View a user's public profile.
+    """
+    return await view_public_profile_service(user_id, current_user)
+
+
+# ==========================================================
+# Get Followers, Following, Products Router
+# ==========================================================
+
+@router.get(
+    "/stats",
+    status_code=status.HTTP_200_OK,
+)
+def get_user_stats(current_user = Depends(get_current_user)):
+    """
+    Get user statistics: followers, following, and products.
+    """
+    return get_user_stats_service(current_user)
+
+
+# ==========================================================
+# Get or Create User Profile Router
+# =========================================================
+
+@router.get(
+    "/profile_or_create",
+    status_code=status.HTTP_200_OK,
+)
+def get_or_create_user_profile(current_user = Depends(get_current_user)):
+    """
+    Get or create user profile.
+    """
+    return get_or_create_user_profile_service(current_user)

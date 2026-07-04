@@ -32,7 +32,9 @@ from fastapi.concurrency import run_in_threadpool
 # Local Imports
 # ==========================
 from app.mongodb.connect import connectdb
+from app.routers import profile
 from app.utils.user import get_current_user
+from app.utils.validators import check_follow_status
 
 
 # Temporary imports
@@ -58,6 +60,11 @@ db = connectdb()
 signup_collection = db["signup"]
 refresh_token_collection = db["refresh_tokens"]
 profile_collection = db["user-profile"]
+follow_collection = db["user-follow"]
+product_collection = db["products_for_sale"]
+signup_collection = db["signup"]
+
+
 
 
 
@@ -438,3 +445,195 @@ async def upload_profile_image_service(
 
 
 
+
+# ==========================================================
+# View Public Profile Service
+# ==========================================================
+
+
+async def view_public_profile_service(
+        user_id: str,
+        current_user: dict
+):
+    """
+    View a user's public profile.
+    """
+
+    # 1. Validate objectId
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid user ID format"
+        )
+    
+    # 2. Fetch user from signup collection
+    user = await run_in_threadpool(
+        signup_collection.find_one,
+        {"_id": ObjectId(user_id)}
+    )
+
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="User not found"
+        )
+    
+    # 3. Fetch or create user profile
+    user_profile = await run_in_threadpool(
+        profile_collection.find_one,
+        {"_id": ObjectId(user_id)}
+    )
+
+    # If profile doesn't exist, create a default one
+    if not user_profile:
+        default_profile = {
+            "_id": ObjectId(user_id),
+            "name": user.get("name"),
+            "email": user.get("email"),
+            "campus": user.get("campus"),
+            "year": user.get("year"),
+            "bio": "",
+            "profile_image": "",
+            "skills": [],
+            "social_links": {},
+            "followers_count": 0,
+            "following_count": 0,
+            "products_count": 0,
+            "is_verified": False,
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow()
+        }
+        
+        await run_in_threadpool(
+            profile_collection.insert_one,
+            default_profile
+        )
+        
+        user_profile = default_profile
+
+    # 4. Check if viewer is following (if authenticated)
+    is_following = False
+    if current_user:
+        is_following = await check_follow_status(
+            current_user["_id"],
+            ObjectId(user_id)
+        )
+
+    # 5. Build public profile data
+    profile_data = {
+        "id": str(user["_id"]),
+        "name": user.get("name"),
+        "email": user.get("email"),  # Consider hiding this for privacy
+        "campus": user_profile.get("campus") or user.get("campus"),
+        "year": user_profile.get("year") or user.get("year"),
+        "branch": user_profile.get("branch"),
+        "bio": user_profile.get("bio"),
+        "profile_image": user_profile.get("profile_image"),
+        "skills": user_profile.get("skills", []),
+        "social_links": user_profile.get("social_links", {}),
+        "followers_count": user_profile.get("followers_count", 0),
+        "following_count": user_profile.get("following_count", 0),
+        "products_count": user_profile.get("products_count", 0),
+        "is_verified": user_profile.get("is_verified", False),
+        "created_at": user.get("created_at"),
+        "is_following": is_following if current_user else None
+    }
+    
+    return {
+        "status": "ok",
+        "user": profile_data
+    }
+
+
+
+# ==========================================================
+# Get User Stats (follower, following, products) Service
+# ==========================================================
+
+
+
+async def get_user_stats_service(
+        user_id: str,
+):
+    """Get user stats from various sources.
+
+    Args:
+        user_id (str): 
+    """
+    # Count followers
+    followers_count = await run_in_threadpool(
+        follow_collection.count_documents,
+        {"following_id": ObjectId(user_id)},
+    )
+
+    # Count following
+    following_count = await run_in_threadpool(
+        follow_collection.count_documents,
+        {"follower_id": ObjectId(user_id)},
+    )
+
+    # Count Products
+    count_products = await run_in_threadpool(
+        product_collection.count_documents,
+        {"seller_id": ObjectId(user_id), "status": "active"},
+    )
+
+    return{
+        "followers": followers_count,
+        "following": following_count,
+        "products": count_products
+    }
+
+
+
+
+# ==========================================================
+# Get or create user profile Service
+# ==========================================================
+
+
+async def get_or_create_user_profile_service(
+        user_id: str,
+):
+    profile = await run_in_threadpool(
+        profile_collection.find_one,
+        {"user_id": ObjectId(user_id)},
+    )
+
+    if not profile:
+        user = await run_in_threadpool(
+            signup_collection.find_one,
+            {"_id": ObjectId(user_id)},
+        )
+
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+
+        profile_data = {
+            "_id": ObjectId(user_id),
+            "name": user.get("name"),
+            "email": user.get("email"),
+            "campus": user.get("campus"),
+            "year": user.get("year"),
+            "bio": "",
+            "profile_image": "",
+            "skills": [],
+            "social_links": {},
+            "followers_count": 0,
+            "following_count": 0,
+            "products_count": 0,
+            "is_verified": False,
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow()
+        }
+        await run_in_threadpool(
+            profile_collection.insert_one,
+            profile_data
+        )
+        
+        return profile_data
+    
+    return profile
