@@ -19,14 +19,16 @@ class ProductType(str, Enum):
     OTHER = "other"
 
 class ProductCategory(str, Enum):
-    ENGINEERING = "engineering"
-    MEDICAL = "medical"
-    COMMERCE = "commerce"
-    ARTS = "arts"
-    SCIENCE = "science"
-    LAW = "law"
-    MANAGEMENT = "management"
+    NOTES = "notes"
+    BOOKS = "books"
+    LAB = "lab"
+    ASSIGNMENTS = "assignments"
+    PPT = "ppt"
+    QUESTION_BANK = "question_bank"
+    HANDWRITTEN_NOTES = "handwritten_notes"
+    CHEAT_SHEET = "cheat_sheet"
     OTHER = "other"
+
 
 class ProductCondition(str, Enum):
     NEW = "new"
@@ -39,8 +41,6 @@ class ProductStatus(str, Enum):
     ACTIVE = "active"
     SOLD = "sold"
     INACTIVE = "inactive"
-    PENDING = "pending"
-    REJECTED = "rejected"
 
 # ============================================================
 # Base Product Schema
@@ -51,25 +51,17 @@ class ProductBase(BaseModel):
     
     # Basic Info
     title: str = Field(..., min_length=3, max_length=200)
-    description: str = Field(..., min_length=10)
-    short_description: Optional[str] = Field(None, max_length=100)
+    description: Optional[str] = Field(None, min_length=10)  # ✅ Made optional
     
     # Category
     category: ProductCategory
-    sub_category: Optional[str] = None
     
     # Pricing
     price: float = Field(..., gt=0)
-    original_price: Optional[float] = Field(None, gt=0)
-    discount_percentage: Optional[float] = Field(None, ge=0, le=100)
-    currency: str = "INR"
     
     # Images
-    thumbnail: Optional[HttpUrl] = None
-    images: List[HttpUrl] = Field(default_factory=list)
-    
-    # Product Type
-    product_type: ProductType
+    thumbnail: HttpUrl = Field(...)  # ✅ Made required
+    images: List[HttpUrl] = Field(default_factory=list)  # ✅ Made optional
     
     # Tags
     tags: List[str] = Field(default_factory=list)
@@ -79,29 +71,11 @@ class ProductBase(BaseModel):
     is_verified: bool = False
     is_featured: bool = False
     
-    # Location
-    campus: Optional[str] = None
-    location: Optional[str] = None
-    
-    # Negotiable
-    is_negotiable: bool = False
-    
-    # Delivery
-    delivery_available: bool = False
-    delivery_fee: Optional[float] = None
-    
     @field_validator("images")
     @classmethod
     def validate_images(cls, v: List[HttpUrl]) -> List[HttpUrl]:
         if len(v) > 4:
             raise ValueError("Maximum 4 images allowed")
-        return v
-
-    @field_validator("discount_percentage")
-    @classmethod
-    def validate_discount(cls, v: Optional[float], info) -> Optional[float]:
-        if v is not None and (v > 100 or v < 0):
-            raise ValueError("Discount must be between 0 and 100")
         return v
 
 
@@ -115,8 +89,7 @@ class ProductCreate(ProductBase):
     @field_validator("images")
     @classmethod
     def validate_images_required(cls, v: List[HttpUrl]) -> List[HttpUrl]:
-        if not v:
-            raise ValueError("At least one image is required")
+        # Images are optional, so no validation needed
         return v
 
 
@@ -129,25 +102,14 @@ class ProductUpdate(BaseModel):
     
     title: Optional[str] = Field(None, min_length=3, max_length=200)
     description: Optional[str] = Field(None, min_length=10)
-    short_description: Optional[str] = Field(None, max_length=100)
     category: Optional[ProductCategory] = None
-    sub_category: Optional[str] = None
     price: Optional[float] = Field(None, gt=0)
-    original_price: Optional[float] = Field(None, gt=0)
-    discount_percentage: Optional[float] = Field(None, ge=0, le=100)
-    currency: Optional[str] = None
     thumbnail: Optional[HttpUrl] = None
     images: Optional[List[HttpUrl]] = Field(None)
-    product_type: Optional[ProductType] = None
     tags: Optional[List[str]] = None
     is_active: Optional[bool] = None
-    is_verified: Optional[bool] = None
-    is_featured: Optional[bool] = None
-    campus: Optional[str] = None
-    location: Optional[str] = None
-    is_negotiable: Optional[bool] = None
-    delivery_available: Optional[bool] = None
-    delivery_fee: Optional[float] = None
+    status: Optional[ProductStatus] = None
+
 
 
 # ============================================================
@@ -184,18 +146,15 @@ class ProductSearchParams(BaseModel):
     
     query: Optional[str] = None
     category: Optional[ProductCategory] = None
-    product_type: Optional[ProductType] = None
     min_price: Optional[float] = Field(None, gt=0)
     max_price: Optional[float] = Field(None, gt=0)
-    campus: Optional[str] = None
-    condition: Optional[ProductCondition] = None
-    is_negotiable: Optional[bool] = None
-    tags: Optional[List[str]] = None
     sort_by: Optional[str] = "created_at"
     sort_order: Optional[str] = "desc"
     page: int = Field(1, ge=1)
     limit: int = Field(20, ge=1, le=100)
-
+    
+    class Config:
+        use_enum_values = True
 
 # ============================================================
 # Cart Schema

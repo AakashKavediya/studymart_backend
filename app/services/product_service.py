@@ -5,9 +5,9 @@ PRODUCT MODULE API ROADMAP
 
 No. | Method | Endpoint                              | Purpose                                      | Status
 ----|--------|---------------------------------------|----------------------------------------------|---------
- 1  | POST   | /products                             | Create a new product                         | 🚧 Pending
- 2  | GET    | /products                             | Get all products (with pagination)           | 🚧 Pending
- 3  | GET    | /products/{product_id}                | Get a specific product by ID                 | 🚧 Pending
+ 1  | POST   | /products                             | Create a new product                         | 🚧 Done
+ 2  | GET    | /products                             | Get all products (with pagination)           | 🚧 Done
+ 3  | GET    | /products/{product_id}                | Get a specific product by ID                 | 🚧 Done
  4  | PUT    | /products/{product_id}                | Edit/update a product                        | 🚧 Pending
  5  | DELETE | /products/{product_id}                | Delete a product                             | 🚧 Pending
  6  | PATCH  | /products/{product_id}/status         | Update product status                        | 🚧 Pending
@@ -92,8 +92,8 @@ from app.schemas.product_schema import (
 # -------------------------
 
 async def create_new_product_service(
-    product_data: ProductCreate,  # Use Pydantic schema for validation
-    current_user: dict  # Receive user from route, NOT Depends
+    product_data: ProductCreate,
+    current_user: dict
 ):
     """
     Create a new product for sale.
@@ -115,7 +115,7 @@ async def create_new_product_service(
             detail="User not authenticated"
         )
     
-    # 2. Check if user has a profile (optional but recommended)
+    # 2. Check if user has a profile
     user_profile = await run_in_threadpool(
         profile_collection.find_one,
         {"_id": ObjectId(user_id)}
@@ -127,29 +127,23 @@ async def create_new_product_service(
             detail="User profile not found. Please complete your profile first."
         )
     
-    # 3. Build product payload
+    # 3. Build product payload (simplified)
     payload = {
         "seller_id": ObjectId(user_id),
+        
+        # Basic Info
         "title": product_data.title,
         "description": product_data.description,
-        "short_description": product_data.short_description,
         
         # Category
         "category": product_data.category,
-        "sub_category": product_data.sub_category,
         
         # Pricing
         "price": product_data.price,
-        "original_price": product_data.original_price,
-        "discount_percentage": product_data.discount_percentage,
-        "currency": product_data.currency,
         
         # Images
-        "thumbnail": product_data.thumbnail,
-        "images": product_data.images,
-        
-        # Product Type
-        "product_type": product_data.product_type,
+        "thumbnail": str(product_data.thumbnail),
+        "images": [str(img) for img in product_data.images] if product_data.images else [],
         
         # Tags
         "tags": product_data.tags,
@@ -158,18 +152,11 @@ async def create_new_product_service(
         "is_active": True,
         "is_verified": False,
         "is_featured": False,
-        "status": ProductStatus.ACTIVE,  # ✅ Use enum
+        "status": ProductStatus.ACTIVE.value,
         
-        # Location
-        "campus": product_data.campus or user_profile.get("campus"),
-        "location": product_data.location or user_profile.get("location"),
-        
-        # Negotiable
-        "is_negotiable": product_data.is_negotiable,
-        
-        # Delivery
-        "delivery_available": product_data.delivery_available,
-        "delivery_fee": product_data.delivery_fee,
+        # Seller info (cached for faster display)
+        "seller_name": user_profile.get("name"),
+        "seller_campus": user_profile.get("campus"),
         
         # Engagement counters
         "views_count": 0,
@@ -208,7 +195,7 @@ async def create_new_product_service(
             "product_id": str(result.inserted_id),
             "title": product_data.title,
             "price": product_data.price,
-            "category": product_data.category,
+            "category": product_data.category.value if hasattr(product_data.category, 'value') else product_data.category,
             "created_at": datetime.utcnow().isoformat()
         }
     }
@@ -322,14 +309,186 @@ async def create_new_product_service_manual(
 # Get all products (with pagination)
 # -------------------------
 
+async def get_all_products_service(
+    page: int = 1,
+    limit: int = 20,
+    sort_by: str = "created_at",
+    sort_order: str = "desc"
+):
+    """
+    Get all active products with pagination and sorting.
+    
+    Args:
+        page (int): Page number (default: 1)
+        limit (int): Items per page (default: 20, max: 50)
+        sort_by (str): Field to sort by (default: "created_at")
+        sort_order (str): Sort order "asc" or "desc" (default: "desc")
+    
+    Returns:
+        dict: Paginated products with metadata
+    """
+    
+    # 1. Validate pagination
+    if page < 1:
+        page = 1
+    if limit < 1 or limit > 50:
+        limit = 20
+    
+    # 2. Calculate skip
+    skip = (page - 1) * limit
+    
+    # 3. Determine sort order
+    sort_direction = -1 if sort_order.lower() == "desc" else 1
+    
+    # 4. Query filter - only active products
+    filter_query = {
+        "is_active": True,
+        "status": ProductStatus.ACTIVE.value
+    }
+    
+    # 5. Get total count for pagination
+    total_count = await run_in_threadpool(
+        product_collection.count_documents,
+        filter_query
+    )
+    
+    # 6. Fetch products with pagination and sorting
+    products_cursor = await run_in_threadpool(
+        product_collection.find,
+        filter_query
+    )
+    
+    # Apply sorting
+    products_cursor = products_cursor.sort(sort_by, sort_direction)
+    
+    # Apply pagination
+    products_cursor = products_cursor.skip(skip).limit(limit)
+    
+    # 7. Convert cursor to list
+    products_list = await run_in_threadpool(
+        list,
+        products_cursor
+    )
+    
+    # 8. Convert ObjectId to string for each product
+    formatted_products = []
+    for product in products_list:
+        product["_id"] = str(product["_id"])
+        product["seller_id"] = str(product["seller_id"])
+        formatted_products.append(product)
+    
+    # 9. Calculate pagination metadata
+    total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+    
+    # 10. Return response
+    return {
+        "status": "ok",
+        "data": {
+            "products": formatted_products,
+            "pagination": {
+                "current_page": page,
+                "total_pages": total_pages,
+                "total_items": total_count,
+                "items_per_page": limit,
+                "has_next": page < total_pages,
+                "has_previous": page > 1
+            },
+            "sort": {
+                "by": sort_by,
+                "order": sort_order
+            }
+        }
+    }
 
 
 # -------------------------
 # Get a specific product by ID
 # -------------------------
 
-
-
+async def get_product_by_id_service(
+    product_id: str,
+    current_user: Optional[dict] = None
+):
+    """
+    Get a specific product by its ID.
+    
+    Args:
+        product_id (str): The ID of the product to retrieve
+        current_user (Optional[dict]): Currently authenticated user (if any)
+    
+    Returns:
+        dict: Product details if found, else raises HTTPException
+    """
+    
+    # 1. Validate ObjectId
+    if not ObjectId.is_valid(product_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid product ID format"
+        )
+    
+    # 2. Build query
+    query = {"_id": ObjectId(product_id)}
+    
+    if not current_user:
+        query["is_active"] = True
+        query["status"] = ProductStatus.ACTIVE.value
+    else:
+        query["is_active"] = True
+        # This requires checking if the current user is the seller
+    
+    # 3. Fetch product
+    product = await run_in_threadpool(
+        product_collection.find_one,
+        query
+    )
+    
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Product not found"
+        )
+    
+    # 4. Convert ObjectId to string
+    product["_id"] = str(product["_id"])
+    product["seller_id"] = str(product["seller_id"])
+    
+    # 5. Check if current user is the seller
+    is_owner = False
+    if current_user:
+        user_id = current_user.get("_id") or current_user.get("id")
+        if user_id and str(user_id) == product["seller_id"]:
+            is_owner = True
+    
+    # 6. Check follow status (if authenticated and not the seller)
+    if current_user and not is_owner:
+        user_id = current_user.get("_id") or current_user.get("id")
+        if user_id:
+            is_following = await check_follow_status(
+                follower_id=user_id,
+                following_id=product["seller_id"]
+            )
+            product["is_following_seller"] = is_following
+    
+    # 7. Increment view count (if not the seller viewing their own product)
+    if not is_owner:
+        await run_in_threadpool(
+            product_collection.update_one,
+            {"_id": ObjectId(product_id)},
+            {"$inc": {"views_count": 1}}
+        )
+        # Update the view count in the response
+        product["views_count"] = product.get("views_count", 0) + 1
+    
+    # 8. Add is_owner flag to response
+    product["is_owner"] = is_owner
+    
+    return {
+        "status": "ok",
+        "data": product
+    }
+    
+   
 # -------------------------
 # Edit/update a product
 # -------------------------

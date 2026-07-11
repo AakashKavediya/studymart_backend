@@ -130,12 +130,13 @@ def StartServer():
 # --------------------
 # Importing routers
 # --------------------
-from app.routers import auth, profile, follower
+from app.routers import auth, profile, follower, products
 
 # Include the router
 app.include_router(auth.router)
 app.include_router(profile.router)
 app.include_router(follower.router)
+app.include_router(products.router)
 
 
 

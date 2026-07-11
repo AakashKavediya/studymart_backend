@@ -1,4 +1,5 @@
 import os
+import certifi
 from dotenv import load_dotenv
 from pymongo import MongoClient
 
@@ -8,7 +9,11 @@ load_dotenv()
 mongourl = os.getenv("mongodb")
 
 def connectdb():
-    client = MongoClient(mongourl)
+    client = MongoClient(
+        mongourl,
+        tls=True,
+        tlsCAFile=certifi.where()
+    )
     db = client["study-mart"]
     return db
 

@@ -39,16 +39,42 @@ No. | Method | Endpoint                              | Purpose                  
 ==========================================================================================================
 """
 
+from fastapi import APIRouter, Depends, status, Query
+from app.utils.user import get_current_user
+from app.schemas.product_schema import ProductCreate
+from app.services.product_service import create_new_product_service,get_all_products_service
+
+router = APIRouter(prefix="/products", tags=["Products"])
 
 # -------------------------
 # Create a new product
 # -------------------------
 
+@router.post("/create", status_code=status.HTTP_201_CREATED)
+async def create_product(
+    product_data: ProductCreate,
+    current_user = Depends(get_current_user)
+):
+    """
+    Create a new product listing.
+    """
+    return await create_new_product_service(product_data, current_user)
 
 # -------------------------
 # Get all products (with pagination)
 # -------------------------
 
+@router.get("/get", status_code=status.HTTP_200_OK)
+async def get_all_products(
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(20, ge=1, le=50, description="Items per page"),
+    sort_by: str = Query("created_at", description="Sort field"),
+    sort_order: str = Query("desc", description="Sort order (asc/desc)")
+):
+    """
+    Get all active products with pagination.
+    """
+    return await get_all_products_service(page, limit, sort_by, sort_order)
 
 
 # -------------------------
