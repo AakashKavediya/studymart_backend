@@ -8,9 +8,9 @@ No. | Method | Endpoint                              | Purpose                  
  1  | POST   | /products                             | Create a new product                         | 🚧 Done
  2  | GET    | /products                             | Get all products (with pagination)           | 🚧 Done
  3  | GET    | /products/{product_id}                | Get a specific product by ID                 | 🚧 Done
- 4  | PUT    | /products/{product_id}                | Edit/update a product                        | 🚧 Pending
- 5  | DELETE | /products/{product_id}                | Delete a product                             | 🚧 Pending
- 6  | PATCH  | /products/{product_id}/status         | Update product status                        | 🚧 Pending
+ 4  | PUT    | /products/{product_id}                | Edit/update a product                        | 🚧 Done
+ 5  | DELETE | /products/{product_id}                | Delete a product                             | 🚧 Done
+ 6  | PATCH  | /products/{product_id}/status         | Update product status                        | 🚧 Done
  7  | GET    | /products/search                      | Search products by keyword                   | 🚧 Pending
  8  | GET    | /products/filter                      | Filter products                              | 🚧 Pending
  9  | GET    | /products/latest                      | Get latest products                          | 🚧 Pending
@@ -51,11 +51,13 @@ product_collection = db["products_for_sale"]
 profile_collection = db["user-profile"]
 follow_collection = db["follows"]
 
+
 """
 Importing from FastAPI
 """
 from fastapi.concurrency import run_in_threadpool
 from fastapi import Depends, HTTPException, status
+
 
 """
 importing required modules
@@ -411,13 +413,6 @@ async def get_product_by_id_service(
 ):
     """
     Get a specific product by its ID.
-    
-    Args:
-        product_id (str): The ID of the product to retrieve
-        current_user (Optional[dict]): Currently authenticated user (if any)
-    
-    Returns:
-        dict: Product details if found, else raises HTTPException
     """
     
     # 1. Validate ObjectId
@@ -427,20 +422,14 @@ async def get_product_by_id_service(
             detail="Invalid product ID format"
         )
     
-    # 2. Build query
-    query = {"_id": ObjectId(product_id)}
-    
-    if not current_user:
-        query["is_active"] = True
-        query["status"] = ProductStatus.ACTIVE.value
-    else:
-        query["is_active"] = True
-        # This requires checking if the current user is the seller
-    
-    # 3. Fetch product
+    # 2. Fetch product with proper typing
     product = await run_in_threadpool(
         product_collection.find_one,
-        query
+        {
+            "_id": ObjectId(product_id),
+            "is_active": True,
+            "status": ProductStatus.ACTIVE.value
+        }
     )
     
     if not product:
@@ -449,49 +438,162 @@ async def get_product_by_id_service(
             detail="Product not found"
         )
     
-    # 4. Convert ObjectId to string
-    product["_id"] = str(product["_id"])
-    product["seller_id"] = str(product["seller_id"])
+    # 3. Format response
+    response_data = {
+        "id": str(product["_id"]),
+        "seller_id": str(product["seller_id"]),
+        "title": product.get("title"),
+        "description": product.get("description"),
+        "category": product.get("category"),
+        "price": product.get("price"),
+        "thumbnail": product.get("thumbnail"),
+        "images": product.get("images", []),
+        "tags": product.get("tags", []),
+        "is_active": product.get("is_active", True),
+        "is_verified": product.get("is_verified", False),
+        "is_featured": product.get("is_featured", False),
+        "status": product.get("status"),
+        "seller_name": product.get("seller_name"),
+        "seller_campus": product.get("seller_campus"),
+        "views_count": product.get("views_count", 0) + 1,  # Increment for response
+        "likes_count": product.get("likes_count", 0),
+        "saved_count": product.get("saved_count", 0),
+        "report_count": product.get("report_count", 0),
+        "created_at": product.get("created_at"),
+        "updated_at": product.get("updated_at"),
+    }
     
-    # 5. Check if current user is the seller
+    # 4. Check if current user is the seller
     is_owner = False
     if current_user:
         user_id = current_user.get("_id") or current_user.get("id")
-        if user_id and str(user_id) == product["seller_id"]:
+        if user_id and str(user_id) == str(product["_id"]):
             is_owner = True
     
-    # 6. Check follow status (if authenticated and not the seller)
+    response_data["is_owner"] = is_owner
+    
+    # 5. Check follow status (if authenticated and not the seller)
     if current_user and not is_owner:
         user_id = current_user.get("_id") or current_user.get("id")
         if user_id:
-            is_following = await check_follow_status(
-                follower_id=user_id,
-                following_id=product["seller_id"]
-            )
-            product["is_following_seller"] = is_following
+            try:
+                is_following = await check_follow_status(
+                    follower_id=user_id,
+                    following_id=str(product["_id"])
+                )
+                response_data["is_following_seller"] = is_following
+            except Exception:
+                response_data["is_following_seller"] = False
     
-    # 7. Increment view count (if not the seller viewing their own product)
-    if not is_owner:
-        await run_in_threadpool(
-            product_collection.update_one,
-            {"_id": ObjectId(product_id)},
-            {"$inc": {"views_count": 1}}
-        )
-        # Update the view count in the response
-        product["views_count"] = product.get("views_count", 0) + 1
-    
-    # 8. Add is_owner flag to response
-    product["is_owner"] = is_owner
+    # 6. Increment view count in database (fire and forget)
+    # Don't await - let it run in background to not slow down response
+    await run_in_threadpool(
+        product_collection.update_one,
+        {"_id": ObjectId(product_id)},
+        {"$inc": {"views_count": 1}}
+    )
     
     return {
         "status": "ok",
-        "data": product
+        "data": response_data
     }
-    
    
 # -------------------------
 # Edit/update a product
 # -------------------------
+
+async def edit_product_service(
+    product_id: str,
+    update_data: ProductUpdate,
+    current_user: dict
+):
+    """
+    Edit/update an existing product.
+    
+    Args:
+        product_id (str): The ID of the product to update
+        update_data (ProductUpdate): The data to update
+        current_user (dict): Currently authenticated user
+    
+    Returns:
+        dict: Updated product details
+    """
+    
+    # 1. Validate ObjectId
+    if not ObjectId.is_valid(product_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,  # ✅ Correct usage
+            detail="Invalid product ID format"
+        )
+    
+    # 2. Check if product exists and user is the owner
+    product = await run_in_threadpool(
+        product_collection.find_one,
+        {"_id": ObjectId(product_id)}
+    )
+    
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,  # ✅ Correct usage
+            detail="Product not found"
+        )
+    
+    # 3. Check if current user is the seller/owner
+    user_id = current_user.get("_id") or current_user.get("id")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,  # ✅ Correct usage
+            detail="User not authenticated"
+        )
+    
+    seller_id = product.get("seller_id")
+    if str(user_id) != str(seller_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,  # ✅ Correct usage
+            detail="You are not authorized to edit this product"
+        )
+    
+    # 4. Prepare update data (exclude unset fields)
+    update_dict = update_data.dict(exclude_unset=True)
+    
+    if not update_dict:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,  # ✅ Correct usage
+            detail="No fields to update"
+        )
+    
+    # 5. Add updated_at timestamp
+    update_dict["updated_at"] = datetime.utcnow()
+    
+    # 6. Update the product
+    result = await run_in_threadpool(
+        product_collection.update_one,
+        {"_id": ObjectId(product_id)},
+        {"$set": update_dict}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,  # ✅ Correct usage
+            detail="Product not found"
+        )
+    
+    # 7. Fetch updated product
+    updated_product = await run_in_threadpool(
+        product_collection.find_one,
+        {"_id": ObjectId(product_id)}
+    )
+    
+    # 8. Format response
+    if updated_product:
+        updated_product["_id"] = str(updated_product["_id"])
+        updated_product["seller_id"] = str(updated_product["seller_id"])
+    
+    return {
+        "status": "ok",
+        "message": "Product updated successfully",
+        "data": updated_product
+    }
 
 
 
@@ -499,11 +601,396 @@ async def get_product_by_id_service(
 # Delete a product
 # -------------------------
 
+async def delete_product_service(
+    product_id: str,
+    current_user: dict,
+    permanent: bool = False
+):
+    """
+    Delete a product.
+    
+    Args:
+        product_id (str): The ID of the product to delete
+        current_user (dict): Currently authenticated user
+        permanent (bool): If True, permanently delete from database. 
+                         If False, soft delete (mark as inactive).
+    
+    Returns:
+        dict: Success message
+    """
+    
+    # 1. Validate ObjectId
+    if not ObjectId.is_valid(product_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid product ID format"
+        )
+    
+    # 2. Check if product exists
+    product = await run_in_threadpool(
+        product_collection.find_one,
+        {"_id": ObjectId(product_id)}
+    )
+    
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Product not found"
+        )
+    
+    # 3. Check if current user is the seller/owner
+    user_id = current_user.get("_id") or current_user.get("id")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not authenticated"
+        )
+    
+    seller_id = product.get("seller_id")
+    if str(user_id) != str(seller_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not authorized to delete this product"
+        )
+    
+    # 4. Delete the product
+    if permanent:
+        # Permanent delete - remove from database
+        result = await run_in_threadpool(
+            product_collection.delete_one,
+            {"_id": ObjectId(product_id)}
+        )
+        
+        if result.deleted_count == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Product not found"
+            )
+        
+        return {
+            "status": "ok",
+            "message": "Product permanently deleted successfully",
+            "data": {
+                "product_id": product_id,
+                "deleted": True
+            }
+        }
+    else:
+        # Soft delete - mark as inactive
+        result = await run_in_threadpool(
+            product_collection.update_one,
+            {"_id": ObjectId(product_id)},
+            {
+                "$set": {
+                    "is_active": False,
+                    "status": "inactive",
+                    "deleted_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+        
+        if result.matched_count == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Product not found"
+            )
+        
+        return {
+            "status": "ok",
+            "message": "Product deleted successfully",
+            "data": {
+                "product_id": product_id,
+                "deleted": True,
+                "soft_delete": True
+            }
+        }
 
+
+# -------------------------
+# Bulk delete products
+# -------------------------
+
+async def bulk_delete_products_service(
+    product_ids: list,
+    current_user: dict,
+    permanent: bool = False
+):
+    """
+    Delete multiple products at once.
+    
+    Args:
+        product_ids (list): List of product IDs to delete
+        current_user (dict): Currently authenticated user
+        permanent (bool): If True, permanently delete from database.
+    
+    Returns:
+        dict: Success message with counts
+    """
+    
+    if not product_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No product IDs provided"
+        )
+    
+    # 1. Validate all ObjectIds
+    valid_ids = []
+    for pid in product_ids:
+        if ObjectId.is_valid(pid):
+            valid_ids.append(ObjectId(pid))
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid product ID format: {pid}"
+            )
+    
+    # 2. Get user ID
+    user_id = current_user.get("_id") or current_user.get("id")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not authenticated"
+        )
+    
+    # 3. Check if all products belong to the user
+    products = await run_in_threadpool(
+        lambda: list(
+            product_collection.find({
+                "_id": {"$in": valid_ids}
+            })
+        )
+    )
+    
+    # Check if all products exist
+    if len(products) != len(valid_ids):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="One or more products not found"
+        )
+    
+    # Check ownership for all products
+    for product in products:
+        if str(product.get("seller_id")) != str(user_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"You are not authorized to delete product: {product.get('_id')}"
+            )
+    
+    # 4. Delete products
+    if permanent:
+        result = await run_in_threadpool(
+            product_collection.delete_many,
+            {"_id": {"$in": valid_ids}}
+        )
+        
+        return {
+            "status": "ok",
+            "message": f"{result.deleted_count} products permanently deleted successfully",
+            "data": {
+                "deleted_count": result.deleted_count,
+                "product_ids": product_ids
+            }
+        }
+    else:
+        result = await run_in_threadpool(
+            product_collection.update_many,
+            {"_id": {"$in": valid_ids}},
+            {
+                "$set": {
+                    "is_active": False,
+                    "status": "inactive",
+                    "deleted_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+        
+        return {
+            "status": "ok",
+            "message": f"{result.modified_count} products deleted successfully",
+            "data": {
+                "deleted_count": result.modified_count,
+                "product_ids": product_ids,
+                "soft_delete": True
+            }
+        }
 
 # -------------------------
 # Update product status
 # -------------------------
+
+async def update_product_status_service(
+    product_id: str,
+    status_value: ProductStatus,
+    current_user: dict
+):
+    """
+    Update the status of a product.
+    
+    Args:
+        product_id (str): The ID of the product to update
+        status_value (ProductStatus): New status (active, sold, inactive)
+        current_user (dict): Currently authenticated user
+    
+    Returns:
+        dict: Updated product details
+    """
+    
+    # 1. Validate ObjectId
+    if not ObjectId.is_valid(product_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid product ID format"
+        )
+    
+    # 2. Check if product exists
+    product = await run_in_threadpool(
+        product_collection.find_one,
+        {"_id": ObjectId(product_id)}
+    )
+    
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Product not found"
+        )
+    
+    # 3. Check if current user is the seller/owner
+    user_id = current_user.get("_id") or current_user.get("id")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not authenticated"
+        )
+    
+    seller_id = product.get("seller_id")
+    if str(user_id) != str(seller_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not authorized to update this product"
+        )
+    
+    # 4. Prepare update data
+    update_dict = {
+        "status": status_value.value,
+        "updated_at": datetime.utcnow()
+    }
+    
+    # 5. Update is_active based on status
+    if status_value == ProductStatus.ACTIVE:
+        update_dict["is_active"] = True
+    elif status_value == ProductStatus.SOLD:
+        update_dict["is_active"] = False
+        # Add sold_at timestamp if needed
+        update_dict["sold_at"] = datetime.utcnow()
+    elif status_value == ProductStatus.INACTIVE:
+        update_dict["is_active"] = False
+    
+    # 6. Update the product
+    result = await run_in_threadpool(
+        product_collection.update_one,
+        {"_id": ObjectId(product_id)},
+        {"$set": update_dict}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Product not found"
+        )
+    
+    # 7. Fetch updated product
+    updated_product = await run_in_threadpool(
+        product_collection.find_one,
+        {"_id": ObjectId(product_id)}
+    )
+    
+    # 8. Format response
+    if updated_product:
+        updated_product["_id"] = str(updated_product["_id"])
+        updated_product["seller_id"] = str(updated_product["seller_id"])
+    
+    return {
+        "status": "ok",
+        "message": f"Product status updated to {status_value.value}",
+        "data": updated_product
+    }
+
+
+# -------------------------
+# Mark product as sold
+# -------------------------
+
+async def mark_product_as_sold_service(
+    product_id: str,
+    current_user: dict
+):
+    """
+    Mark a product as sold.
+    
+    Args:
+        product_id (str): The ID of the product to mark as sold
+        current_user (dict): Currently authenticated user
+    
+    Returns:
+        dict: Updated product details
+    """
+    return await update_product_status_service(
+        product_id=product_id,
+        status_value=ProductStatus.SOLD,
+        current_user=current_user
+    )
+
+
+# -------------------------
+# Mark product as active
+# -------------------------
+
+async def mark_product_as_active_service(
+    product_id: str,
+    current_user: dict
+):
+    """
+    Mark a product as active (available for sale).
+    
+    Args:
+        product_id (str): The ID of the product to mark as active
+        current_user (dict): Currently authenticated user
+    
+    Returns:
+        dict: Updated product details
+    """
+    return await update_product_status_service(
+        product_id=product_id,
+        status_value=ProductStatus.ACTIVE,
+        current_user=current_user
+    )
+
+
+# -------------------------
+# Mark product as inactive
+# -------------------------
+
+async def mark_product_as_inactive_service(
+    product_id: str,
+    current_user: dict
+):
+    """
+    Mark a product as inactive (temporarily unavailable).
+    
+    Args:
+        product_id (str): The ID of the product to mark as inactive
+        current_user (dict): Currently authenticated user
+    
+    Returns:
+        dict: Updated product details
+    """
+    return await update_product_status_service(
+        product_id=product_id,
+        status_value=ProductStatus.INACTIVE,
+        current_user=current_user
+    )
 
 
 
