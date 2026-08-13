@@ -143,13 +143,12 @@ class ProductResponse(ProductBase):
 
 class ProductSearchParams(BaseModel):
     """Schema for product search/filter parameters."""
-    
     query: Optional[str] = None
     category: Optional[ProductCategory] = None
     min_price: Optional[float] = Field(None, gt=0)
     max_price: Optional[float] = Field(None, gt=0)
-    sort_by: Optional[str] = "created_at"
-    sort_order: Optional[str] = "desc"
+    sort_by: str = "created_at"
+    sort_order: str = "desc"
     page: int = Field(1, ge=1)
     limit: int = Field(20, ge=1, le=100)
     
@@ -205,6 +204,8 @@ class ProductStatsResponse(BaseModel):
 # Product Report Schema
 # ============================================================
 
+# Add to product_schema.py - Report schemas
+
 class ReportReason(str, Enum):
     SPAM = "spam"
     SCAM = "scam"
@@ -226,6 +227,29 @@ class ProductReportResponse(BaseModel):
     reason: ReportReason
     description: Optional[str]
     created_at: datetime
+    status: str
     
     class Config:
         populate_by_name = True
+
+
+
+# Add to product_schema.py - Like response
+
+class LikeResponse(BaseModel):
+    product_id: str
+    likes_count: int
+    is_liked: bool
+
+
+
+# Add to product_schema.py - Save response
+
+class SaveResponse(BaseModel):
+    product_id: str
+    saved_count: int
+    is_saved: bool
+
+
+
+

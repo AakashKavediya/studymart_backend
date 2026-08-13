@@ -51,7 +51,7 @@ def create_refresh_token() -> str:
 from app.schemas.user_schema import CreateUser, LoginSchema, LogoutSchema, RefreshTokenSchema
 from app.schemas.profile_schema import UserProfilePublic, UpdateProfile
 from app.schemas.product_schema import ProductCreate, ProductUpdate, ProductResponse
-from app.schemas.lost_and_found_schema import LostCreate, LostUpdate
+from app.routers import lost_and_found
 
 # --------------------
 # Importing Database
@@ -137,7 +137,7 @@ app.include_router(auth.router)
 app.include_router(profile.router)
 app.include_router(follower.router)
 app.include_router(products.router)
-
+app.include_router(lost_and_found.router)
 
 
 

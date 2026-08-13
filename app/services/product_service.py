@@ -42,7 +42,7 @@ No. | Method | Endpoint                              | Purpose                  
 """
 Importing database connection and required modules
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 
 from app.mongodb.connect import connectdb
@@ -50,7 +50,7 @@ db = connectdb()
 product_collection = db["products_for_sale"]
 profile_collection = db["user-profile"]
 follow_collection = db["follows"]
-
+signup_collection = db["signup"]
 
 """
 Importing from FastAPI
@@ -994,33 +994,1428 @@ async def mark_product_as_inactive_service(
 
 
 
-# -------------------------
-# Get product recommendations
-# -------------------------
+# In app/services/product_service.py - Replace the existing search_products_service
+
+async def search_products_service(
+    search_params: ProductSearchParams
+):
+    """
+    Search products by keyword with filters.
+    Uses $text if index exists, otherwise falls back to regex.
+    """
+    # 1. Build search query
+    query = {}
+    
+    # 2. Search logic with fallback
+    if search_params.query:
+        # SAFE FALLBACK: Use regex (no index required)
+        # This guarantees it won't crash if the text index is missing
+        query["$or"] = [
+            {"title": {"$regex": search_params.query, "$options": "i"}},
+            {"description": {"$regex": search_params.query, "$options": "i"}}
+        ]
+    
+    # Category filter
+    if search_params.category:
+        query["category"] = search_params.category.value if hasattr(search_params.category, 'value') else search_params.category
+    
+    # Price range filter
+    price_filter = {}
+    if search_params.min_price is not None:
+        price_filter["$gte"] = search_params.min_price
+    if search_params.max_price is not None:
+        price_filter["$lte"] = search_params.max_price
+    if price_filter:
+        query["price"] = price_filter
+    
+    # Only active products
+    query["is_active"] = True
+    query["status"] = ProductStatus.ACTIVE.value
+    
+    # 2. Calculate pagination
+    skip = (search_params.page - 1) * search_params.limit
+    
+    # 3. Determine sort order
+    sort_direction = -1 if search_params.sort_order.lower() == "desc" else 1
+    sort_field = search_params.sort_by
+    
+    # 4. Get total count
+    total_count = await run_in_threadpool(
+        product_collection.count_documents,
+        query
+    )
+    
+    # 5. Fetch products
+    cursor = await run_in_threadpool(
+        product_collection.find,
+        query
+    )
+    cursor = cursor.sort(sort_field, sort_direction)
+    cursor = cursor.skip(skip).limit(search_params.limit)
+    
+    products_list = await run_in_threadpool(list, cursor)
+    
+    # 6. Format products
+    formatted_products = []
+    for product in products_list:
+        product["_id"] = str(product["_id"])
+        product["seller_id"] = str(product["seller_id"])
+        formatted_products.append(product)
+    
+    # 7. Pagination metadata
+    total_pages = (total_count + search_params.limit - 1) // search_params.limit if total_count > 0 else 1
+    
+    # 8. Return response
+    return {
+        "status": "ok",
+        "data": {
+            "products": formatted_products,
+            "pagination": {
+                "current_page": search_params.page,
+                "total_pages": total_pages,
+                "total_items": total_count,
+                "items_per_page": search_params.limit,
+                "has_next": search_params.page < total_pages,
+                "has_previous": search_params.page > 1
+            },
+            "search_query": search_params.query,
+            "filters": {
+                "category": search_params.category,
+                "min_price": search_params.min_price,
+                "max_price": search_params.max_price
+            }
+        }
+    }
 
 
 
-# -------------------------
-# Get product statistics
-# -------------------------
+
+# Add to product_service.py - Filter products
+
+async def filter_products_service(
+    category: Optional[ProductCategory] = None,
+    product_type: Optional[ProductType] = None,
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
+    campus: Optional[str] = None,
+    condition: Optional[ProductCondition] = None,
+    is_verified: Optional[bool] = None,
+    is_featured: Optional[bool] = None,
+    page: int = 1,
+    limit: int = 20,
+    sort_by: str = "created_at",
+    sort_order: str = "desc"
+):
+    """
+    Filter products by multiple criteria.
+    """
+    # 1. Build filter query
+    query = {"is_active": True, "status": ProductStatus.ACTIVE.value}
+    
+    # Category filter
+    if category:
+        query["category"] = category.value if hasattr(category, 'value') else category
+    
+    # Product type filter
+    if product_type:
+        query["product_type"] = product_type.value if hasattr(product_type, 'value') else product_type
+    
+    # Campus filter
+    if campus:
+        query["seller_campus"] = campus
+    
+    # Condition filter
+    if condition:
+        query["condition"] = condition.value if hasattr(condition, 'value') else condition
+    
+    # Verified/Featured filters
+    if is_verified is not None:
+        query["is_verified"] = is_verified
+    if is_featured is not None:
+        query["is_featured"] = is_featured
+    
+    # Price range filter
+    price_filter = {}
+    if min_price is not None:
+        price_filter["$gte"] = min_price
+    if max_price is not None:
+        price_filter["$lte"] = max_price
+    if price_filter:
+        query["price"] = price_filter
+    
+    # 2. Calculate pagination
+    skip = (page - 1) * limit
+    
+    # 3. Sort
+    sort_direction = -1 if sort_order.lower() == "desc" else 1
+    
+    # 4. Get total count
+    total_count = await run_in_threadpool(
+        product_collection.count_documents,
+        query
+    )
+    
+    # 5. Fetch products
+    cursor = await run_in_threadpool(
+        product_collection.find,
+        query
+    )
+    cursor = cursor.sort(sort_by, sort_direction)
+    cursor = cursor.skip(skip).limit(limit)
+    
+    products_list = await run_in_threadpool(list, cursor)
+    
+    # 6. Format
+    formatted_products = []
+    for product in products_list:
+        product["_id"] = str(product["_id"])
+        product["seller_id"] = str(product["seller_id"])
+        formatted_products.append(product)
+    
+    # 7. Pagination metadata
+    total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+    
+    return {
+        "status": "ok",
+        "data": {
+            "products": formatted_products,
+            "pagination": {
+                "current_page": page,
+                "total_pages": total_pages,
+                "total_items": total_count,
+                "items_per_page": limit,
+                "has_next": page < total_pages,
+                "has_previous": page > 1
+            },
+            "filters_applied": {
+                "category": category,
+                "product_type": product_type,
+                "campus": campus,
+                "condition": condition,
+                "min_price": min_price,
+                "max_price": max_price,
+                "is_verified": is_verified,
+                "is_featured": is_featured
+            }
+        }
+    }
 
 
 
 
-# -------------------------
-# Get product categories
-# -------------------------
+
+
+# Add to product_service.py - Latest products
+
+async def get_latest_products_service(
+    limit: int = 20
+):
+    """
+    Get the latest products added.
+    """
+    # 1. Query for active products, sorted by creation date (newest first)
+    query = {
+        "is_active": True,
+        "status": ProductStatus.ACTIVE.value
+    }
+    
+    # 2. Fetch products
+    cursor = await run_in_threadpool(
+        product_collection.find,
+        query
+    )
+    cursor = cursor.sort("created_at", -1).limit(limit)
+    
+    products_list = await run_in_threadpool(list, cursor)
+    
+    # 3. Format
+    formatted_products = []
+    for product in products_list:
+        product["_id"] = str(product["_id"])
+        product["seller_id"] = str(product["seller_id"])
+        formatted_products.append(product)
+    
+    return {
+        "status": "ok",
+        "data": {
+            "products": formatted_products,
+            "count": len(formatted_products),
+            "limit": limit
+        }
+    }
 
 
 
-# -------------------------
-# Get product types
-# -------------------------
 
 
 
-# -------------------------
-# Get similar products
-# -------------------------
+
+# Add to product_service.py - Trending products
+
+async def get_trending_products_service(
+    limit: int = 20,
+    time_period: str = "week"  # day, week, month
+):
+    """
+    Get trending products based on engagement (views + likes + saves).
+    """
+    # 1. Calculate time threshold
+    now = datetime.utcnow()
+    if time_period == "day":
+        threshold = now - timedelta(days=1)
+    elif time_period == "week":
+        threshold = now - timedelta(days=7)
+    elif time_period == "month":
+        threshold = now - timedelta(days=30)
+    else:
+        threshold = now - timedelta(days=7)  # default: week
+    
+    # 2. Query active products with engagement metrics
+    query = {
+        "is_active": True,
+        "status": ProductStatus.ACTIVE.value,
+        "created_at": {"$gte": threshold}  # Only recent products
+    }
+    
+    # 3. Calculate trending score: views + (likes * 2) + (saves * 3)
+    # We'll sort by engagement in the query
+    pipeline = [
+        {"$match": query},
+        {
+            "$addFields": {
+                "trending_score": {
+                    "$add": [
+                        "$views_count",
+                        {"$multiply": ["$likes_count", 2]},
+                        {"$multiply": ["$saved_count", 3]}
+                    ]
+                }
+            }
+        },
+        {"$sort": {"trending_score": -1}},
+        {"$limit": limit}
+    ]
+    
+    # 4. Execute aggregation
+    products_list = await run_in_threadpool(
+        lambda: list(product_collection.aggregate(pipeline))
+    )
+    
+    # 5. Format
+    formatted_products = []
+    for product in products_list:
+        product["_id"] = str(product["_id"])
+        product["seller_id"] = str(product["seller_id"])
+        formatted_products.append(product)
+    
+    return {
+        "status": "ok",
+        "data": {
+            "products": formatted_products,
+            "count": len(formatted_products),
+            "time_period": time_period,
+            "limit": limit
+        }
+    }
 
 
+
+
+
+
+# Add to product_service.py - My products
+
+async def get_my_products_service(
+    current_user: dict,
+    page: int = 1,
+    limit: int = 20,
+    status_filter: Optional[ProductStatus] = None
+):
+    """
+    Get current user's products.
+    """
+    # 1. Get user ID
+    user_id = current_user.get("_id") or current_user.get("id")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not authenticated"
+        )
+    
+    # 2. Build query
+    query: Dict[str, Any] = {"seller_id": ObjectId(user_id)}
+    
+    # Status filter
+    if status_filter:
+        query["status"] = status_filter.value if hasattr(status_filter, 'value') else status_filter
+    
+    # 3. Pagination
+    skip = (page - 1) * limit
+    
+    # 4. Get total count
+    total_count = await run_in_threadpool(
+        product_collection.count_documents,
+        query
+    )
+    
+    # 5. Fetch products
+    cursor = await run_in_threadpool(
+        product_collection.find,
+        query
+    )
+    cursor = cursor.sort("created_at", -1).skip(skip).limit(limit)
+    
+    products_list = await run_in_threadpool(list, cursor)
+    
+    # 6. Format
+    formatted_products = []
+    for product in products_list:
+        product["_id"] = str(product["_id"])
+        product["seller_id"] = str(product["seller_id"])
+        formatted_products.append(product)
+    
+    # 7. Pagination metadata
+    total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+    
+    return {
+        "status": "ok",
+        "data": {
+            "products": formatted_products,
+            "pagination": {
+                "current_page": page,
+                "total_pages": total_pages,
+                "total_items": total_count,
+                "items_per_page": limit,
+                "has_next": page < total_pages,
+                "has_previous": page > 1
+            },
+            "status_filter": status_filter
+        }
+    }
+
+
+
+
+
+
+
+
+# Add to product_service.py - User products
+
+async def get_user_products_service(
+    user_id: str,
+    page: int = 1,
+    limit: int = 20,
+    status_filter: Optional[ProductStatus] = None
+):
+    """
+    Get products by a specific user.
+    """
+    # 1. Validate ObjectId
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid user ID format"
+        )
+    
+    # 2. Check if user exists
+    user = await run_in_threadpool(
+        signup_collection.find_one,
+        {"_id": ObjectId(user_id)}
+    )
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # 3. Build query - only show active products for public view
+    query = {
+        "seller_id": ObjectId(user_id),
+        "is_active": True,
+        "status": ProductStatus.ACTIVE.value
+    }
+    
+    # Status filter (overrides default)
+    if status_filter:
+        query["status"] = status_filter.value if hasattr(status_filter, 'value') else status_filter
+    
+    # 4. Pagination
+    skip = (page - 1) * limit
+    
+    # 5. Get total count
+    total_count = await run_in_threadpool(
+        product_collection.count_documents,
+        query
+    )
+    
+    # 6. Fetch products
+    cursor = await run_in_threadpool(
+        product_collection.find,
+        query
+    )
+    cursor = cursor.sort("created_at", -1).skip(skip).limit(limit)
+    
+    products_list = await run_in_threadpool(list, cursor)
+    
+    # 7. Format
+    formatted_products = []
+    for product in products_list:
+        product["_id"] = str(product["_id"])
+        product["seller_id"] = str(product["seller_id"])
+        formatted_products.append(product)
+    
+    # 8. Pagination metadata
+    total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+    
+    return {
+        "status": "ok",
+        "data": {
+            "user_id": user_id,
+            "user_name": user.get("name"),
+            "products": formatted_products,
+            "pagination": {
+                "current_page": page,
+                "total_pages": total_pages,
+                "total_items": total_count,
+                "items_per_page": limit,
+                "has_next": page < total_pages,
+                "has_previous": page > 1
+            }
+        }
+    }
+
+
+
+
+
+
+# Add to product_service.py - Categories
+
+async def get_product_categories_service():
+    """
+    Get all product categories with product counts.
+    """
+    # 1. Aggregate categories with counts
+    pipeline = [
+        {"$match": {"is_active": True, "status": ProductStatus.ACTIVE.value}},
+        {"$group": {
+            "_id": "$category",
+            "count": {"$sum": 1}
+        }},
+        {"$sort": {"count": -1}}
+    ]
+    
+    categories = await run_in_threadpool(
+        lambda: list(product_collection.aggregate(pipeline))
+    )
+    
+    # 2. Format categories
+    formatted_categories = []
+    for cat in categories:
+        formatted_categories.append({
+            "name": cat["_id"],
+            "count": cat["count"]
+        })
+    
+    return {
+        "status": "ok",
+        "data": {
+            "categories": formatted_categories,
+            "total": len(formatted_categories)
+        }
+    }
+
+
+
+
+
+
+
+
+
+# Add to product_service.py - Types
+
+async def get_product_types_service():
+    """
+    Get all product types with product counts.
+    """
+    # 1. Aggregate types with counts
+    pipeline = [
+        {"$match": {"is_active": True, "status": ProductStatus.ACTIVE.value}},
+        {"$group": {
+            "_id": "$product_type",
+            "count": {"$sum": 1}
+        }},
+        {"$sort": {"count": -1}}
+    ]
+    
+    types = await run_in_threadpool(
+        lambda: list(product_collection.aggregate(pipeline))
+    )
+    
+    # 2. Format types
+    formatted_types = []
+    for t in types:
+        formatted_types.append({
+            "name": t["_id"],
+            "count": t["count"]
+        })
+    
+    return {
+        "status": "ok",
+        "data": {
+            "types": formatted_types,
+            "total": len(formatted_types)
+        }
+    }
+
+
+
+
+
+
+
+
+# Add to product_service.py - Similar products
+
+async def get_similar_products_service(
+    product_id: str,
+    limit: int = 10
+):
+    """
+    Get similar products based on category and tags.
+    """
+    # 1. Validate ObjectId
+    if not ObjectId.is_valid(product_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid product ID format"
+        )
+    
+    # 2. Get the product
+    product = await run_in_threadpool(
+        product_collection.find_one,
+        {"_id": ObjectId(product_id)}
+    )
+    
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Product not found"
+        )
+    
+    # 3. Build similar products query
+    # Find products with same category OR overlapping tags
+    category = product.get("category")
+    tags = product.get("tags", [])
+    
+    query = {
+        "_id": {"$ne": ObjectId(product_id)},  # Exclude current product
+        "is_active": True,
+        "status": ProductStatus.ACTIVE.value,
+        "$or": [
+            {"category": category},
+            {"tags": {"$in": tags}}
+        ]
+    }
+    
+    # 4. Fetch similar products
+    cursor = await run_in_threadpool(
+        product_collection.find,
+        query
+    )
+    cursor = cursor.limit(limit)
+    
+    products_list = await run_in_threadpool(list, cursor)
+    
+    # 5. Format
+    formatted_products = []
+    for prod in products_list:
+        prod["_id"] = str(prod["_id"])
+        prod["seller_id"] = str(prod["seller_id"])
+        formatted_products.append(prod)
+    
+    return {
+        "status": "ok",
+        "data": {
+            "product_id": product_id,
+            "similar_products": formatted_products,
+            "count": len(formatted_products),
+            "limit": limit
+        }
+    }
+
+
+
+
+
+
+
+# Add to product_service.py - Product statistics
+
+async def get_product_stats_service(
+    current_user: dict
+):
+    """
+    Get product statistics for the current user.
+    """
+    # 1. Get user ID
+    user_id = current_user.get("_id") or current_user.get("id")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not authenticated"
+        )
+    
+    # 2. Build pipeline for stats
+    pipeline = [
+        {"$match": {"seller_id": ObjectId(user_id)}},
+        {"$group": {
+            "_id": None,
+            "total_products": {"$sum": 1},
+            "active_products": {
+                "$sum": {"$cond": [{"$eq": ["$status", ProductStatus.ACTIVE.value]}, 1, 0]}
+            },
+            "sold_products": {
+                "$sum": {"$cond": [{"$eq": ["$status", ProductStatus.SOLD.value]}, 1, 0]}
+            },
+            "inactive_products": {
+                "$sum": {"$cond": [{"$eq": ["$status", ProductStatus.INACTIVE.value]}, 1, 0]}
+            },
+            "total_views": {"$sum": "$views_count"},
+            "total_likes": {"$sum": "$likes_count"},
+            "total_saves": {"$sum": "$saved_count"},
+            "total_revenue": {
+                "$sum": {"$cond": [{"$eq": ["$status", ProductStatus.SOLD.value]}, "$price", 0]}
+            }
+        }}
+    ]
+    
+    # 3. Execute aggregation
+    stats = await run_in_threadpool(
+        lambda: list(product_collection.aggregate(pipeline))
+    )
+    
+    if not stats:
+        # No products yet
+        return {
+            "status": "ok",
+            "data": {
+                "total_products": 0,
+                "active_products": 0,
+                "sold_products": 0,
+                "inactive_products": 0,
+                "total_views": 0,
+                "total_likes": 0,
+                "total_saves": 0,
+                "total_revenue": 0
+            }
+        }
+    
+    # 4. Format response
+    stats_data = stats[0]
+    del stats_data["_id"]  # Remove _id field
+    
+    return {
+        "status": "ok",
+        "data": stats_data
+    }
+
+
+
+
+
+# Add to product_service.py - Like/Unlike product
+
+async def like_product_service(
+    product_id: str,
+    current_user: dict
+):
+    """
+    Like a product.
+    """
+    # 1. Validate ObjectId
+    if not ObjectId.is_valid(product_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid product ID format"
+        )
+    
+    # 2. Get user ID
+    user_id = current_user.get("_id") or current_user.get("id")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not authenticated"
+        )
+    
+    # 3. Check if product exists
+    product = await run_in_threadpool(
+        product_collection.find_one,
+        {"_id": ObjectId(product_id)}
+    )
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Product not found"
+        )
+    
+    # 4. Check if already liked (using likes collection)
+    likes_collection = db["product_likes"]
+    
+    existing_like = await run_in_threadpool(
+        likes_collection.find_one,
+        {"product_id": ObjectId(product_id), "user_id": ObjectId(user_id)}
+    )
+    
+    if existing_like:
+        # Already liked
+        return {
+            "status": "ok",
+            "message": "Product already liked",
+            "data": {
+                "product_id": product_id,
+                "likes_count": product.get("likes_count", 0),
+                "is_liked": True
+            }
+        }
+    
+    # 5. Add like
+    like_data = {
+        "product_id": ObjectId(product_id),
+        "user_id": ObjectId(user_id),
+        "created_at": datetime.utcnow()
+    }
+    
+    await run_in_threadpool(
+        likes_collection.insert_one,
+        like_data
+    )
+    
+    # 6. Increment likes count
+    await run_in_threadpool(
+        product_collection.update_one,
+        {"_id": ObjectId(product_id)},
+        {"$inc": {"likes_count": 1}}
+    )
+    
+    # 7. Get updated likes count
+    updated_product = await run_in_threadpool(
+        product_collection.find_one,
+        {"_id": ObjectId(product_id)}
+    )
+    
+    return {
+        "status": "ok",
+        "message": "Product liked successfully",
+        "data": {
+            "product_id": product_id,
+            "likes_count": updated_product.get("likes_count", 0) if updated_product else 0,
+            "is_liked": True
+        }
+    }
+
+
+async def unlike_product_service(
+    product_id: str,
+    current_user: dict
+):
+    """
+    Unlike a product.
+    """
+    # 1. Validate ObjectId
+    if not ObjectId.is_valid(product_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid product ID format"
+        )
+    
+    # 2. Get user ID
+    user_id = current_user.get("_id") or current_user.get("id")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not authenticated"
+        )
+    
+    # 3. Check if product exists
+    product = await run_in_threadpool(
+        product_collection.find_one,
+        {"_id": ObjectId(product_id)}
+    )
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Product not found"
+        )
+    
+    # 4. Check if liked
+    likes_collection = db["product_likes"]
+    
+    existing_like = await run_in_threadpool(
+        likes_collection.find_one,
+        {"product_id": ObjectId(product_id), "user_id": ObjectId(user_id)}
+    )
+    
+    if not existing_like:
+        # Not liked
+        return {
+            "status": "ok",
+            "message": "Product not liked",
+            "data": {
+                "product_id": product_id,
+                "likes_count": product.get("likes_count", 0),
+                "is_liked": False
+            }
+        }
+    
+    # 5. Remove like
+    await run_in_threadpool(
+        likes_collection.delete_one,
+        {"product_id": ObjectId(product_id), "user_id": ObjectId(user_id)}
+    )
+    
+    # 6. Decrement likes count (ensure not below 0)
+    await run_in_threadpool(
+        product_collection.update_one,
+        {"_id": ObjectId(product_id), "likes_count": {"$gt": 0}},
+        {"$inc": {"likes_count": -1}}
+    )
+    
+    # 7. Get updated likes count
+    updated_product = await run_in_threadpool(
+        product_collection.find_one,
+        {"_id": ObjectId(product_id)}
+    )
+    
+    return {
+        "status": "ok",
+        "message": "Product unliked successfully",
+        "data": {
+            "product_id": product_id,
+            "likes_count": updated_product.get("likes_count", 0) if updated_product else 0,
+            "is_liked": False
+        }
+    }
+
+
+
+
+
+# Add to product_service.py - Save/Unsave product
+
+async def save_product_service(
+    product_id: str,
+    current_user: dict
+):
+    """
+    Save/favorite a product.
+    """
+    # 1. Validate ObjectId
+    if not ObjectId.is_valid(product_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid product ID format"
+        )
+    
+    # 2. Get user ID
+    user_id = current_user.get("_id") or current_user.get("id")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not authenticated"
+        )
+    
+    # 3. Check if product exists
+    product = await run_in_threadpool(
+        product_collection.find_one,
+        {"_id": ObjectId(product_id)}
+    )
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Product not found"
+        )
+    
+    # 4. Check if already saved
+    saves_collection = db["product_saves"]
+    
+    existing_save = await run_in_threadpool(
+        saves_collection.find_one,
+        {"product_id": ObjectId(product_id), "user_id": ObjectId(user_id)}
+    )
+    
+    if existing_save:
+        # Already saved
+        return {
+            "status": "ok",
+            "message": "Product already saved",
+            "data": {
+                "product_id": product_id,
+                "saved_count": product.get("saved_count", 0),
+                "is_saved": True
+            }
+        }
+    
+    # 5. Add save
+    save_data = {
+        "product_id": ObjectId(product_id),
+        "user_id": ObjectId(user_id),
+        "created_at": datetime.utcnow()
+    }
+    
+    await run_in_threadpool(
+        saves_collection.insert_one,
+        save_data
+    )
+    
+    # 6. Increment saved count
+    await run_in_threadpool(
+        product_collection.update_one,
+        {"_id": ObjectId(product_id)},
+        {"$inc": {"saved_count": 1}}
+    )
+    
+    # 7. Get updated saved count
+    updated_product = await run_in_threadpool(
+        product_collection.find_one,
+        {"_id": ObjectId(product_id)}
+    )
+    
+    return {
+        "status": "ok",
+        "message": "Product saved successfully",
+        "data": {
+            "product_id": product_id,
+            "saved_count": updated_product.get("saved_count", 0) if updated_product else 0,
+            "is_saved": True
+        }
+    }
+
+
+async def unsave_product_service(
+    product_id: str,
+    current_user: dict
+):
+    """
+    Remove a saved/favorited product.
+    """
+    # 1. Validate ObjectId
+    if not ObjectId.is_valid(product_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid product ID format"
+        )
+    
+    # 2. Get user ID
+    user_id = current_user.get("_id") or current_user.get("id")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not authenticated"
+        )
+    
+    # 3. Check if product exists
+    product = await run_in_threadpool(
+        product_collection.find_one,
+        {"_id": ObjectId(product_id)}
+    )
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Product not found"
+        )
+    
+    # 4. Check if saved
+    saves_collection = db["product_saves"]
+    
+    existing_save = await run_in_threadpool(
+        saves_collection.find_one,
+        {"product_id": ObjectId(product_id), "user_id": ObjectId(user_id)}
+    )
+    
+    if not existing_save:
+        # Not saved
+        return {
+            "status": "ok",
+            "message": "Product not saved",
+            "data": {
+                "product_id": product_id,
+                "saved_count": product.get("saved_count", 0),
+                "is_saved": False
+            }
+        }
+    
+    # 5. Remove save
+    await run_in_threadpool(
+        saves_collection.delete_one,
+        {"product_id": ObjectId(product_id), "user_id": ObjectId(user_id)}
+    )
+    
+    # 6. Decrement saved count (ensure not below 0)
+    await run_in_threadpool(
+        product_collection.update_one,
+        {"_id": ObjectId(product_id), "saved_count": {"$gt": 0}},
+        {"$inc": {"saved_count": -1}}
+    )
+    
+    # 7. Get updated saved count
+    updated_product = await run_in_threadpool(
+        product_collection.find_one,
+        {"_id": ObjectId(product_id)}
+    )
+    
+    return {
+        "status": "ok",
+        "message": "Product unsaved successfully",
+        "data": {
+            "product_id": product_id,
+            "saved_count": updated_product.get("saved_count", 0) if updated_product else 0,
+            "is_saved": False
+        }
+    }
+
+
+
+
+
+
+# Add to product_service.py - View count
+
+async def increment_product_view_service(
+    product_id: str
+):
+    """
+    Increment product view count.
+    """
+    # 1. Validate ObjectId
+    if not ObjectId.is_valid(product_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid product ID format"
+        )
+    
+    # 2. Increment view count
+    result = await run_in_threadpool(
+        product_collection.update_one,
+        {"_id": ObjectId(product_id)},
+        {"$inc": {"views_count": 1}}
+    )
+    
+    if result.matched_count == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Product not found"
+        )
+    
+    return {
+        "status": "ok",
+        "message": "View count incremented",
+        "data": {
+            "product_id": product_id
+        }
+    }
+
+
+
+
+
+
+
+
+# Add to product_service.py - Report product
+
+async def report_product_service(
+    report_data: ProductReportCreate,
+    current_user: dict
+):
+    """
+    Report a product.
+    """
+    # 1. Validate ObjectId
+    if not ObjectId.is_valid(report_data.product_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid product ID format"
+        )
+    
+    # 2. Get user ID
+    user_id = current_user.get("_id") or current_user.get("id")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not authenticated"
+        )
+    
+    # 3. Check if product exists
+    product = await run_in_threadpool(
+        product_collection.find_one,
+        {"_id": ObjectId(report_data.product_id)}
+    )
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Product not found"
+        )
+    
+    # 4. Check if already reported by this user
+    reports_collection = db["product_reports"]
+    
+    existing_report = await run_in_threadpool(
+        reports_collection.find_one,
+        {
+            "product_id": ObjectId(report_data.product_id),
+            "reporter_id": ObjectId(user_id)
+        }
+    )
+    
+    if existing_report:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You have already reported this product"
+        )
+    
+    # 5. Create report
+    report = {
+        "product_id": ObjectId(report_data.product_id),
+        "reporter_id": ObjectId(user_id),
+        "reason": report_data.reason.value if hasattr(report_data.reason, 'value') else report_data.reason,
+        "description": report_data.description,
+        "created_at": datetime.utcnow(),
+        "status": "pending"
+    }
+    
+    result = await run_in_threadpool(
+        reports_collection.insert_one,
+        report
+    )
+    
+    # 6. Increment report count on product
+    await run_in_threadpool(
+        product_collection.update_one,
+        {"_id": ObjectId(report_data.product_id)},
+        {"$inc": {"report_count": 1}}
+    )
+    
+    return {
+        "status": "ok",
+        "message": "Product reported successfully",
+        "data": {
+            "report_id": str(result.inserted_id),
+            "product_id": report_data.product_id,
+            "reason": report_data.reason,
+            "status": "pending"
+        }
+    }
+
+
+
+
+
+
+
+# Add to product_service.py - Get reported products (Admin)
+
+async def get_reported_products_service(
+    current_user: dict,
+    page: int = 1,
+    limit: int = 20,
+    status_filter: Optional[str] = None
+):
+    """
+    Get all reported products (Admin only).
+    """
+    # 1. Check if user is admin
+    user_id = current_user.get("_id") or current_user.get("id")
+    
+    # Check if user has admin role (you'll need to implement this)
+    # For now, let's assume there's an is_admin field
+    user_profile = await run_in_threadpool(
+        profile_collection.find_one,
+        {"_id": ObjectId(user_id)}
+    )
+    
+    if not user_profile or not user_profile.get("is_admin", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
+        )
+    
+    # 2. Build query
+    reports_collection = db["product_reports"]
+    
+    query = {}
+    if status_filter:
+        query["status"] = status_filter
+    
+    # 3. Pagination
+    skip = (page - 1) * limit
+    
+    # 4. Get total count
+    total_count = await run_in_threadpool(
+        reports_collection.count_documents,
+        query
+    )
+    
+    # 5. Fetch reports with product details
+    cursor = await run_in_threadpool(
+        reports_collection.find,
+        query
+    )
+    cursor = cursor.sort("created_at", -1).skip(skip).limit(limit)
+    
+    reports_list = await run_in_threadpool(list, cursor)
+    
+    # 6. Fetch product details for each report
+    formatted_reports = []
+    for report in reports_list:
+        product_id = report["product_id"]
+        product = await run_in_threadpool(
+            product_collection.find_one,
+            {"_id": product_id}
+        )
+        
+        formatted_reports.append({
+            "report_id": str(report["_id"]),
+            "product_id": str(product_id),
+            "product_title": product.get("title") if product else "Product not found",
+            "reporter_id": str(report["reporter_id"]),
+            "reason": report["reason"],
+            "description": report.get("description"),
+            "status": report["status"],
+            "created_at": report["created_at"]
+        })
+    
+    # 7. Pagination metadata
+    total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+    
+    return {
+        "status": "ok",
+        "data": {
+            "reports": formatted_reports,
+            "pagination": {
+                "current_page": page,
+                "total_pages": total_pages,
+                "total_items": total_count,
+                "items_per_page": limit,
+                "has_next": page < total_pages,
+                "has_previous": page > 1
+            },
+            "status_filter": status_filter
+        }
+    }
+
+
+
+
+
+
+# Add to product_service.py - Recommendations
+
+async def get_product_recommendations_service(
+    current_user: dict,
+    limit: int = 20
+):
+    """
+    Get personalized product recommendations based on user activity.
+    """
+    # 1. Get user ID
+    user_id = current_user.get("_id") or current_user.get("id")
+    if not user_id:
+        # For non-authenticated users, return trending products
+        return await get_trending_products_service(limit)
+    
+    # 2. Get user's liked/saved products to understand preferences
+    likes_collection = db["product_likes"]
+    saves_collection = db["product_saves"]
+    
+    # Get liked products
+    liked_cursor = await run_in_threadpool(
+        likes_collection.find,
+        {"user_id": ObjectId(user_id)}
+    )
+    liked_products = await run_in_threadpool(list, liked_cursor)
+    
+    # Get saved products
+    saved_cursor = await run_in_threadpool(
+        saves_collection.find,
+        {"user_id": ObjectId(user_id)}
+    )
+    saved_products = await run_in_threadpool(list, saved_cursor)
+    
+    # 3. Extract categories and tags from liked/saved products
+    product_ids = []
+    for like in liked_products:
+        product_ids.append(like["product_id"])
+    for save in saved_products:
+        product_ids.append(save["product_id"])
+    
+    if not product_ids:
+        # If no activity, return trending products
+        return await get_trending_products_service(limit)
+    
+    # 4. Get product details to extract preferences
+    products = await run_in_threadpool(
+        lambda: list(
+            product_collection.find({"_id": {"$in": product_ids}})
+        )
+    )
+    
+    categories = set()
+    tags = set()
+    for prod in products:
+        if prod.get("category"):
+            categories.add(prod["category"])
+        if prod.get("tags"):
+            tags.update(prod["tags"])
+    
+    # 5. Build recommendation query
+    query = {
+        "_id": {"$nin": product_ids},  # Exclude already interacted products
+        "is_active": True,
+        "status": ProductStatus.ACTIVE.value,
+        "$or": [
+            {"category": {"$in": list(categories)}} if categories else {},
+            {"tags": {"$in": list(tags)}} if tags else {}
+        ]
+    }
+    
+    # Remove empty conditions
+    if not categories:
+        del query["$or"][0]
+    if not tags:
+        del query["$or"][1]
+    
+    # If no categories or tags, return trending
+    if not query.get("$or"):
+        return await get_trending_products_service(limit)
+    
+    # 6. Fetch recommendations
+    cursor = await run_in_threadpool(
+        product_collection.find,
+        query
+    )
+    cursor = cursor.sort("created_at", -1).limit(limit)
+    
+    recommendations = await run_in_threadpool(list, cursor)
+    
+    # 7. Format
+    formatted_products = []
+    for product in recommendations:
+        product["_id"] = str(product["_id"])
+        product["seller_id"] = str(product["seller_id"])
+        formatted_products.append(product)
+    
+    return {
+        "status": "ok",
+        "data": {
+            "recommendations": formatted_products,
+            "count": len(formatted_products),
+            "limit": limit,
+            "based_on": {
+                "categories": list(categories),
+                "tags": list(tags)
+            }
+        }
+    }
