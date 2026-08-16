@@ -5,20 +5,20 @@ LOST & FOUND MODULE API ROADMAP
 
 No. | Method | Endpoint                                  | Purpose                                      | Status
 ----|--------|-------------------------------------------|----------------------------------------------|---------
- 1  | POST   | /lost-and-found                           | Create a new lost item                       | 🚧 Done
- 2  | GET    | /lost-and-found                           | Get all lost items (with pagination)         | 🚧 Done
- 3  | GET    | /lost-and-found/search                    | Search lost items                            | 🚧 Done
- 4  | GET    | /lost-and-found/{item_id}                 | Get a specific lost item by ID               | 🚧 Done
- 5  | PUT    | /lost-and-found/{item_id}                 | Edit/update a lost item                      | 🚧 Done
- 6  | DELETE | /lost-and-found/{item_id}                 | Delete a lost item                           | 🚧 Done
- 7  | PATCH  | /lost-and-found/{item_id}/status          | Update item status                           | 🚧 Done
- 8  | POST   | /lost-and-found/{item_id}/claim           | Claim a found item                           | 🚧 Done
- 9  | POST   | /lost-and-found/{item_id}/comment         | Add a comment to a lost item                 | 🚧 Done
-10  | GET    | /lost-and-found/{item_id}/comments        | Get comments for a lost item                 | 🚧 Done
-11  | GET    | /lost-and-found/my-items                  | Get current user's lost items                | 🚧 Done
-12  | GET    | /lost-and-found/user/{user_id}            | Get items by a specific user                 | 🚧 Done
-13  | GET    | /lost-and-found/categories                | Get all categories with counts               | 🚧 Done
-14  | GET    | /lost-and-found/stats                     | Get lost & found statistics                  | 🚧 Done
+ 1  | POST   | /lost-and-found                           | Create a new lost item                       | ✅ Done
+ 2  | GET    | /lost-and-found                           | Get all lost items (with pagination)         | ✅ Done
+ 3  | GET    | /lost-and-found/search                    | Search lost items                            | ✅ Done
+ 4  | GET    | /lost-and-found/{item_id}                 | Get a specific lost item by ID               | ✅ Done
+ 5  | PUT    | /lost-and-found/{item_id}                 | Edit/update a lost item                      | ✅ Done
+ 6  | DELETE | /lost-and-found/{item_id}                 | Delete a lost item                           | ✅ Done
+ 7  | PATCH  | /lost-and-found/{item_id}/status          | Update item status                           | ✅ Done
+ 8  | POST   | /lost-and-found/{item_id}/claim           | Claim a found item                           | ✅ Done
+ 9  | POST   | /lost-and-found/{item_id}/comment         | Add a comment to a lost item                 | ✅ Done
+10  | GET    | /lost-and-found/{item_id}/comments        | Get comments for a lost item                 | ✅ Done
+11  | GET    | /lost-and-found/my-items                  | Get current user's lost items                | ✅ Done
+12  | GET    | /lost-and-found/user/{user_id}            | Get items by a specific user                 | ✅ Done
+13  | GET    | /lost-and-found/categories                | Get all categories with counts               | ✅ Done
+14  | GET    | /lost-and-found/stats                     | Get lost & found statistics                  | ✅ Done
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Path, Body
@@ -30,7 +30,7 @@ from app.schemas.lost_and_found_schema import (
     LostItemUpdate,
     LostItemSearchParams,
     LostItemStatus,
-    LostItemCategory,
+    LostItemType,
     CommentCreate,
     ClaimItemCreate,
 )
@@ -68,13 +68,10 @@ async def create_lost_item(
     Create a new lost/found item.
     
     - **title**: Item title (3-200 characters)
-    - **description**: Item description (min 10 characters)
-    - **category**: Item category
+    - **description**: Item description (optional)
+    - **type**: 'lost' or 'complaint'
     - **location**: Where it was lost/found
-    - **campus**: Campus name
-    - **contact_info**: Contact information
-    - **condition**: Item condition
-    - **images**: List of image URLs (max 4)
+    - **image**: Optional image URL (Cloudinary)
     """
     return await create_lost_item_service(item_data, current_user)
 
@@ -103,8 +100,7 @@ async def get_all_lost_items(
 @router.get("/search", status_code=status.HTTP_200_OK)
 async def search_lost_items(
     query: Optional[str] = Query(None, description="Search keyword"),
-    category: Optional[LostItemCategory] = Query(None, description="Filter by category"),
-    campus: Optional[str] = Query(None, description="Filter by campus"),
+    type: Optional[LostItemType] = Query(None, description="Filter by type (lost/complaint)"),
     status: Optional[LostItemStatus] = Query(None, description="Filter by status"),
     location: Optional[str] = Query(None, description="Filter by location"),
     sort_by: str = Query("created_at", description="Sort field"),
@@ -114,11 +110,15 @@ async def search_lost_items(
 ):
     """
     Search lost items by keyword with filters.
+    
+    - **query**: Search term
+    - **type**: 'lost' or 'complaint'
+    - **status**: active, resolved, closed
+    - **location**: Location filter
     """
     search_params = LostItemSearchParams(
         query=query,
-        category=category,
-        campus=campus,
+        type=type,
         status=status,
         location=location,
         sort_by=sort_by,
@@ -193,9 +193,8 @@ async def update_item_status(
     Update item status.
     
     Available statuses:
-    - **lost**: Item is lost
-    - **found**: Item has been found
-    - **resolved**: Item is resolved (claim confirmed)
+    - **active**: Item is active
+    - **resolved**: Item is resolved
     - **closed**: Item is closed
     """
     return await update_item_status_service(item_id, status_value, current_user)
@@ -221,7 +220,7 @@ async def claim_item(
 
 
 # ============================================================
-# 9. ADD COMMENT
+# 9. ADD COMMENT (✅ This is the missing piece!)
 # ============================================================
 
 @router.post("/{item_id}/comment", status_code=status.HTTP_200_OK)

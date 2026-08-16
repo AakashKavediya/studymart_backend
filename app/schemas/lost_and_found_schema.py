@@ -5,13 +5,20 @@ from datetime import datetime
 from typing import Optional, List
 from enum import Enum
 
+# ============================================================
 # Enums
-class LostItemStatus(str, Enum):
+# ============================================================
+
+class LostItemType(str, Enum):
     LOST = "lost"
-    FOUND = "found"
+    COMPLAINT = "complaint"
+
+class LostItemStatus(str, Enum):
+    ACTIVE = "active"
     RESOLVED = "resolved"
     CLOSED = "closed"
 
+# ⚠️ DEPRECATED: Kept only to prevent Router crashes. Not used by frontend.
 class LostItemCategory(str, Enum):
     ELECTRONICS = "electronics"
     BOOKS = "books"
@@ -24,6 +31,7 @@ class LostItemCategory(str, Enum):
     JEWELRY = "jewelry"
     OTHER = "other"
 
+# ⚠️ DEPRECATED: Kept only to prevent Router crashes. Not used by frontend.
 class LostItemCondition(str, Enum):
     NEW = "new"
     GOOD = "good"
@@ -37,66 +45,82 @@ class LostItemCondition(str, Enum):
 class LostItemBase(BaseModel):
     """Base schema with common lost item fields."""
     
+    # Required
     title: str = Field(..., min_length=3, max_length=200)
-    description: str = Field(..., min_length=10)
-    category: LostItemCategory
     location: str = Field(..., min_length=3)
-    campus: str = Field(..., min_length=2)
+    type: LostItemType  # 'lost' or 'complaint'
+    
+    # Optional
+    description: Optional[str] = Field(None, min_length=10)
+    image: Optional[HttpUrl] = None  # Single optional image
+    
+    # ⚠️ DEPRECATED FIELDS (Kept to prevent Router crashes)
+    category: Optional[LostItemCategory] = None
+    condition: Optional[LostItemCondition] = None
+    campus: Optional[str] = None
     contact_info: Optional[str] = None
-    condition: Optional[LostItemCondition] = LostItemCondition.GOOD
-    images: List[HttpUrl] = Field(default_factory=list)
 
-    @field_validator("images")
+    @field_validator("image")
     @classmethod
-    def validate_images(cls, v: List[HttpUrl]) -> List[HttpUrl]:
-        if len(v) > 4:
-            raise ValueError("Maximum 4 images allowed")
+    def validate_image(cls, v: Optional[HttpUrl]) -> Optional[HttpUrl]:
         return v
 
 # ============================================================
-# Create Lost Item Schema
+# Create Lost Item Schema (Used by frontend Modal)
 # ============================================================
 
-class LostItemCreate(LostItemBase):
+class LostItemCreate(BaseModel):
     """Schema for creating a new lost item."""
-    pass
+    title: str = Field(..., min_length=3, max_length=200)
+    location: str = Field(..., min_length=3)
+    type: LostItemType
+    description: Optional[str] = Field(None, min_length=10)
+    image: Optional[HttpUrl] = None
+
+    @field_validator("image")
+    @classmethod
+    def validate_image(cls, v: Optional[HttpUrl]) -> Optional[HttpUrl]:
+        return v
 
 # ============================================================
 # Update Lost Item Schema
 # ============================================================
 
 class LostItemUpdate(BaseModel):
-    """Schema for updating a lost item."""
+    """Schema for updating an existing lost item."""
     title: Optional[str] = Field(None, min_length=3, max_length=200)
-    description: Optional[str] = Field(None, min_length=10)
-    category: Optional[LostItemCategory] = None
     location: Optional[str] = Field(None, min_length=3)
-    campus: Optional[str] = Field(None, min_length=2)
-    contact_info: Optional[str] = None
-    condition: Optional[LostItemCondition] = None
+    type: Optional[LostItemType] = None
+    description: Optional[str] = Field(None, min_length=10)
+    image: Optional[HttpUrl] = None
     status: Optional[LostItemStatus] = None
-    images: Optional[List[HttpUrl]] = None
     is_resolved: Optional[bool] = None
 
 # ============================================================
-# Lost Item Response Schema
+# Lost Item Response Schema (Used by frontend Card)
 # ============================================================
 
-class LostItemResponse(LostItemBase):
+class LostItemResponse(BaseModel):
     """Schema for lost item responses."""
     
     id: str = Field(..., alias="_id")
     user_id: str
-    user_name: Optional[str] = None
-    user_email: Optional[str] = None
+    user_name: Optional[str] = None  # Populated via lookup
     user_avatar: Optional[HttpUrl] = None
-    status: LostItemStatus = LostItemStatus.LOST
+    
+    title: str
+    location: str
+    type: LostItemType  # Matches frontend 'post.type'
+    description: Optional[str] = None
+    image: Optional[HttpUrl] = None  # Frontend checks if null
+    
+    status: LostItemStatus = LostItemStatus.ACTIVE
     is_resolved: bool = False
-    views_count: int = 0
     comments_count: int = 0
+    views_count: int = 0
+    
     created_at: datetime
     updated_at: datetime
-    resolved_at: Optional[datetime] = None
     
     class Config:
         use_enum_values = True
@@ -109,10 +133,7 @@ class LostItemResponse(LostItemBase):
 class LostItemSearchParams(BaseModel):
     """Schema for lost item search/filter parameters."""
     query: Optional[str] = None
-    category: Optional[LostItemCategory] = None
-    campus: Optional[str] = None
-    status: Optional[LostItemStatus] = None
-    location: Optional[str] = None
+    type: Optional[LostItemType] = None  # Filter by 'lost' or 'complaint'
     sort_by: str = "created_at"
     sort_order: str = "desc"
     page: int = Field(1, ge=1)
@@ -122,7 +143,7 @@ class LostItemSearchParams(BaseModel):
         use_enum_values = True
 
 # ============================================================
-# Claim Item Schema
+# Claim Item Schema (Required by your Router)
 # ============================================================
 
 class ClaimItemCreate(BaseModel):
@@ -132,7 +153,7 @@ class ClaimItemCreate(BaseModel):
     contact_info: Optional[str] = None
 
 # ============================================================
-# Comment Schema
+# Comment Schemas (Required by your frontend)
 # ============================================================
 
 class CommentCreate(BaseModel):

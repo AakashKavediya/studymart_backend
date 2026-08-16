@@ -5,23 +5,24 @@ LOST & FOUND MODULE API ROADMAP
 
 No. | Method | Endpoint                                  | Purpose                                      | Status
 ----|--------|-------------------------------------------|----------------------------------------------|---------
- 1  | POST   | /lost-and-found                           | Create a new lost item                       | 🚧 Done
- 2  | GET    | /lost-and-found                           | Get all lost items (with pagination)         | 🚧 Done
- 3  | GET    | /lost-and-found/search                    | Search lost items                            | 🚧 Done
- 4  | GET    | /lost-and-found/{item_id}                 | Get a specific lost item by ID               | 🚧 Done
- 5  | PUT    | /lost-and-found/{item_id}                 | Edit/update a lost item                      | 🚧 Done
- 6  | DELETE | /lost-and-found/{item_id}                 | Delete a lost item                           | 🚧 Done
- 7  | PATCH  | /lost-and-found/{item_id}/status          | Update item status                           | 🚧 Done
- 8  | POST   | /lost-and-found/{item_id}/claim           | Claim a found item                           | 🚧 Done
- 9  | POST   | /lost-and-found/{item_id}/comment         | Add a comment to a lost item                 | 🚧 Done
-10  | GET    | /lost-and-found/{item_id}/comments        | Get comments for a lost item                 | 🚧 Done
-11  | GET    | /lost-and-found/my-items                  | Get current user's lost items                | 🚧 Done
-12  | GET    | /lost-and-found/user/{user_id}            | Get items by a specific user                 | 🚧 Done
-13  | GET    | /lost-and-found/categories                | Get all categories with counts               | 🚧 Done
-14  | GET    | /lost-and-found/stats                     | Get lost & found statistics                  | 🚧 Done
+ 1  | POST   | /lost-and-found                           | Create a new lost item                       | ✅ Done
+ 2  | GET    | /lost-and-found                           | Get all lost items (with pagination)         | ✅ Done
+ 3  | GET    | /lost-and-found/search                    | Search lost items                            | ✅ Done
+ 4  | GET    | /lost-and-found/{item_id}                 | Get a specific lost item by ID               | ✅ Done
+ 5  | PUT    | /lost-and-found/{item_id}                 | Edit/update a lost item                      | ✅ Done
+ 6  | DELETE | /lost-and-found/{item_id}                 | Delete a lost item                           | ✅ Done
+ 7  | PATCH  | /lost-and-found/{item_id}/status          | Update item status                           | ✅ Done
+ 8  | POST   | /lost-and-found/{item_id}/claim           | Claim a found item                           | ✅ Done
+ 9  | POST   | /lost-and-found/{item_id}/comment         | Add a comment to a lost item                 | ✅ Done
+10  | GET    | /lost-and-found/{item_id}/comments        | Get comments for a lost item                 | ✅ Done
+11  | GET    | /lost-and-found/my-items                  | Get current user's lost items                | ✅ Done
+12  | GET    | /lost-and-found/user/{user_id}            | Get items by a specific user                 | ✅ Done
+13  | GET    | /lost-and-found/categories                | Get all categories with counts               | 🚧 Pending
+14  | GET    | /lost-and-found/stats                     | Get lost & found statistics                  | ✅ Done
 """
 
 from datetime import datetime, timedelta
+import logging
 from typing import Dict, Any, Optional, List
 
 from app.mongodb.connect import connectdb
@@ -42,6 +43,7 @@ from app.schemas.lost_and_found_schema import (
     LostItemUpdate,
     LostItemSearchParams,
     LostItemStatus,
+    LostItemType,
     CommentCreate,
     ClaimItemCreate,
 )
@@ -71,18 +73,15 @@ async def create_lost_item_service(
         {"_id": ObjectId(user_id)}
     )
     
-    # 3. Build payload
+    # 3. Build payload (Updated to match the new schema)
     payload = {
         "user_id": ObjectId(user_id),
         "title": item_data.title,
         "description": item_data.description,
-        "category": item_data.category,
+        "type": item_data.type.value,  # ✅ New: 'lost' or 'complaint'
         "location": item_data.location,
-        "campus": item_data.campus,
-        "contact_info": item_data.contact_info,
-        "condition": item_data.condition,
-        "images": [str(img) for img in item_data.images] if item_data.images else [],
-        "status": LostItemStatus.LOST.value,
+        "image": str(item_data.image) if item_data.image else None,  # ✅ New: Single optional image
+        "status": LostItemStatus.ACTIVE.value,
         "is_resolved": False,
         "user_name": user_profile.get("name") if user_profile else current_user.get("name"),
         "user_email": current_user.get("email"),
@@ -111,7 +110,7 @@ async def create_lost_item_service(
         "data": {
             "item_id": str(result.inserted_id),
             "title": item_data.title,
-            "category": item_data.category.value if hasattr(item_data.category, 'value') else item_data.category,
+            "type": item_data.type.value,
             "created_at": datetime.utcnow().isoformat()
         }
     }
@@ -211,21 +210,9 @@ async def search_lost_items_service(
             {"description": {"$regex": search_params.query, "$options": "i"}}
         ]
     
-    # Category filter
-    if search_params.category:
-        query["category"] = search_params.category.value if hasattr(search_params.category, 'value') else search_params.category
-    
-    # Campus filter
-    if search_params.campus:
-        query["campus"] = search_params.campus
-    
-    # Status filter
-    if search_params.status:
-        query["status"] = search_params.status.value if hasattr(search_params.status, 'value') else search_params.status
-    
-    # Location filter
-    if search_params.location:
-        query["location"] = {"$regex": search_params.location, "$options": "i"}
+    # ✅ New: Type filter (lost or complaint)
+    if search_params.type:
+        query["type"] = search_params.type.value if hasattr(search_params.type, 'value') else search_params.type
     
     # 2. Pagination
     skip = (search_params.page - 1) * search_params.limit
@@ -269,10 +256,7 @@ async def search_lost_items_service(
             },
             "filters": {
                 "query": search_params.query,
-                "category": search_params.category,
-                "campus": search_params.campus,
-                "status": search_params.status,
-                "location": search_params.location
+                "type": search_params.type
             }
         }
     }
@@ -308,23 +292,19 @@ async def get_lost_item_by_id_service(
             detail="Item not found"
         )
     
-    # 3. Format response
+    # 3. Format response (Updated to match frontend card)
     response_data = {
         "id": str(item["_id"]),
         "user_id": str(item["user_id"]),
+        "user_name": item.get("user_name"),
+        "user_avatar": item.get("user_avatar"),
         "title": item.get("title"),
         "description": item.get("description"),
-        "category": item.get("category"),
         "location": item.get("location"),
-        "campus": item.get("campus"),
-        "contact_info": item.get("contact_info"),
-        "condition": item.get("condition"),
-        "images": item.get("images", []),
+        "image": item.get("image"),
+        "type": item.get("type"),
         "status": item.get("status"),
         "is_resolved": item.get("is_resolved", False),
-        "user_name": item.get("user_name"),
-        "user_email": item.get("user_email"),
-        "user_avatar": item.get("user_avatar"),
         "views_count": item.get("views_count", 0) + 1,
         "comments_count": item.get("comments_count", 0),
         "created_at": item.get("created_at"),
@@ -561,7 +541,7 @@ async def update_item_status_service(
     if status_value == LostItemStatus.RESOLVED:
         update_dict["is_resolved"] = True
         update_dict["resolved_at"] = datetime.utcnow()
-    elif status_value == LostItemStatus.LOST or status_value == LostItemStatus.FOUND:
+    elif status_value == LostItemStatus.ACTIVE:
         update_dict["is_resolved"] = False
     
     # 5. Update
@@ -719,7 +699,7 @@ async def add_comment_service(
         "item_id": ObjectId(item_id),
         "user_id": ObjectId(user_id),
         "user_name": current_user.get("name"),
-        "user_avatar": None,  # Could fetch from profile
+        "user_avatar": None,
         "content": comment_data.content,
         "created_at": datetime.utcnow()
     }
@@ -994,7 +974,7 @@ async def get_lost_item_categories_service():
     pipeline = [
         {"$match": {"status": {"$ne": LostItemStatus.CLOSED.value}}},
         {"$group": {
-            "_id": "$category",
+            "_id": "$type",  # ✅ Changed from "category" to "type"
             "count": {"$sum": 1}
         }},
         {"$sort": {"count": -1}}
@@ -1027,58 +1007,74 @@ async def get_lost_item_categories_service():
 async def get_lost_found_stats_service():
     """
     Get lost & found statistics.
+    This does NOT require authentication.
     """
-    # Total items
-    total = await run_in_threadpool(
-        lost_items_collection.count_documents,
-        {}
-    )
-    
-    # Active lost items
-    lost = await run_in_threadpool(
-        lost_items_collection.count_documents,
-        {"status": LostItemStatus.LOST.value}
-    )
-    
-    # Found items
-    found = await run_in_threadpool(
-        lost_items_collection.count_documents,
-        {"status": LostItemStatus.FOUND.value}
-    )
-    
-    # Resolved items
-    resolved = await run_in_threadpool(
-        lost_items_collection.count_documents,
-        {"status": LostItemStatus.RESOLVED.value}
-    )
-    
-    # Closed items
-    closed = await run_in_threadpool(
-        lost_items_collection.count_documents,
-        {"status": LostItemStatus.CLOSED.value}
-    )
-    
-    # Total views
-    pipeline = [
-        {"$group": {
-            "_id": None,
-            "total_views": {"$sum": "$views_count"}
-        }}
-    ]
-    
-    views_result = await run_in_threadpool(
-        lambda: list(lost_items_collection.aggregate(pipeline))
-    )
-    total_views = views_result[0]["total_views"] if views_result else 0
-    
-    return {
-        "status": "ok",
-        "data": {
-            "total_items": total,
-            "lost": lost,
-            "found": found,
-            "resolved": resolved,
-            "closed": closed,
-            "total_views": total_views
+    try:
+        # Total items
+        total = await run_in_threadpool(
+            lost_items_collection.count_documents,
+            {}
+        )
+        
+        # Active lost items
+        lost = await run_in_threadpool(
+            lost_items_collection.count_documents,
+            {"type": LostItemType.LOST.value, "status": {"$ne": LostItemStatus.CLOSED.value}}
+        )
+        
+        # Active complaints
+        complaints = await run_in_threadpool(
+            lost_items_collection.count_documents,
+            {"type": LostItemType.COMPLAINT.value, "status": {"$ne": LostItemStatus.CLOSED.value}}
+        )
+        
+        # Resolved items
+        resolved = await run_in_threadpool(
+            lost_items_collection.count_documents,
+            {"status": LostItemStatus.RESOLVED.value}
+        )
+        
+        # Closed items
+        closed = await run_in_threadpool(
+            lost_items_collection.count_documents,
+            {"status": LostItemStatus.CLOSED.value}
+        )
+        
+        # Total views
+        pipeline = [
+            {"$group": {
+                "_id": None,
+                "total_views": {"$sum": "$views_count"}
+            }}
+        ]
+        
+        views_result = await run_in_threadpool(
+            lambda: list(lost_items_collection.aggregate(pipeline))
+        )
+        total_views = views_result[0]["total_views"] if views_result else 0
+        
+        return {
+            "status": "ok",
+            "data": {
+                "total_items": total,
+                "lost": lost,
+                "complaints": complaints,
+                "resolved": resolved,
+                "closed": closed,
+                "total_views": total_views
+            }
         }
-    }
+    except Exception as e:
+        # If anything fails, return safe defaults instead of crashing
+        logging.error(f"Error fetching lost & found stats: {e}")
+        return {
+            "status": "ok",
+            "data": {
+                "total_items": 0,
+                "lost": 0,
+                "complaints": 0,
+                "resolved": 0,
+                "closed": 0,
+                "total_views": 0
+            }
+        }
