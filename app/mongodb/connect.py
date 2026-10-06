@@ -1,20 +1,31 @@
+# app/mongodb/connect.py
 import os
+from typing import Any
+
 import certifi
 from dotenv import load_dotenv
 from pymongo import MongoClient
 
-# Load environment variables from .env file
 load_dotenv()
 
-mongourl = os.getenv("mongodb")
+# Accept either env var name
+mongourl: str | None = os.getenv("MONGO_URI") or os.getenv("mongodb")
 
-def connectdb():
-    client = MongoClient(
-        mongourl,
-        tls=True,
-        tlsCAFile=certifi.where()
+if not mongourl:
+    raise RuntimeError("MONGO_URI (or mongodb) is not set in .env")
+
+
+def connectdb() -> Any:
+    # Only enable TLS for Atlas (mongodb+srv:// or *.mongodb.net)
+    is_atlas: bool = (
+        mongourl.startswith("mongodb+srv://")  # type: ignore[union-attr]
+        or "mongodb.net" in mongourl          # type: ignore[operator]
     )
-    db = client["study-mart"]
-    return db
 
+    kwargs: dict[str, Any] = {"serverSelectionTimeoutMS": 10000}
+    if is_atlas:
+        kwargs["tls"] = True
+        kwargs["tlsCAFile"] = certifi.where()
 
+    client: MongoClient = MongoClient(mongourl, **kwargs)  # type: ignore[arg-type]
+    return client["study-mart"]

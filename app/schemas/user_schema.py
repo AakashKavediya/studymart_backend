@@ -91,3 +91,15 @@ class LogoutSchema(BaseModel):
 
 class RefreshTokenSchema(BaseModel):
     refresh_token: str
+
+
+
+
+#----------------------------
+# GOOGLE AUTH SCHEMA
+#----------------------------
+
+
+
+class GoogleLoginSchema(BaseModel):
+    id_token: str = Field(..., description="Google ID token from frontend")

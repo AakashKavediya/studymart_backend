@@ -1,134 +1,108 @@
-# importing dependencies
-from fastapi import FastAPI, Depends, status, Query, APIRouter, HTTPException
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from datetime import datetime, timezone, timedelta
-from dotenv import load_dotenv
-from fastapi import Response, Request
-from fastapi.middleware.cors import CORSMiddleware
-from bson import ObjectId
-from pymongo.errors import DuplicateKeyError
-from bson.errors import InvalidId
-from pydantic import BaseModel, EmailStr, field_validator
-from jose import jwt, JWTError
-from fastapi.concurrency import run_in_threadpool
 import logging
-import secrets
-import bcrypt
-import asyncio
-import email
-import re
 import os
+import secrets
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone, timedelta
+
+from dotenv import load_dotenv
+from fastapi import FastAPI
+from fastapi.concurrency import run_in_threadpool
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer
+from jose import jwt
 
 # --------------------
-# Importing environment variables
+# Environment
 # --------------------
 load_dotenv()
 SECRET_KEY = os.getenv("SECRET_KEY")
-ALGORITHM = os.getenv("ALGORITHM")
+ALGORITHM = os.getenv("ALGORITHM", "HS256")
+
+if not SECRET_KEY:
+    raise RuntimeError("SECRET_KEY is not set in environment/.env")
+
 ACCESS_TOKEN_EXPIRE_MINUTES = 15
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 # --------------------
-# JWT Functions
+# Database
 # --------------------
-def create_access_token(user_id: str, email: str) -> str:
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    payload = {
-        "sub": user_id,
-        "email": email,
-        "exp": expire,
-        "type": "access"
-    }
-    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+from app.mongodb.connect import connectdb  # noqa: E402
 
-def create_refresh_token() -> str:
-    # Opaque random string — NOT a JWT, harder to forge
-    return secrets.token_urlsafe(32)
-
-# --------------------
-# Importing Schemas
-# --------------------
-from app.schemas.user_schema import CreateUser, LoginSchema, LogoutSchema, RefreshTokenSchema
-from app.schemas.profile_schema import UserProfilePublic, UpdateProfile
-from app.schemas.product_schema import ProductCreate, ProductUpdate, ProductResponse
-
-# Import Socket Manager
-from app.socket_manager import socket_app 
-
-# --------------------
-# Importing Database
-# --------------------
-from app.mongodb.connect import connectdb
-
-# --------------------
-# Database Connections
-# --------------------
 db = connectdb()
 signup_collection = db["signup"]
 profile_collection = db["user-profile"]
-product_collection = db["products"]
+product_collection = db["products_for_sale"]
 lost_and_found_collection = db["lost_and_found"]
 lost_and_found_comment_collection = db["lost_and_found_comment"]
 refresh_token_collection = db["refresh_tokens"]
 
-"""
-App Created
-"""
-app = FastAPI()
+# --------------------
+# JWT
+# --------------------
+def create_access_token(user_id: str, email: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    payload = {
+        "sub": user_id,
+        "email": email,
+        "exp": expire,
+        "type": "access",
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
-"""
-Logging Configuration
-"""
+
+def create_refresh_token() -> str:
+    return secrets.token_urlsafe(32)
+
+# --------------------
+# Lifespan
+# --------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await run_in_threadpool(refresh_token_collection.create_index, "token", unique=True)
+    await run_in_threadpool(
+        refresh_token_collection.create_index,
+        "expires_at",
+        expireAfterSeconds=0,
+    )
+    print("Server started successfully")
+    yield
+
+
+
+# --------------------
+# App
+# --------------------
+app = FastAPI(lifespan=lifespan)
+
 logging.basicConfig(level=logging.INFO)
 
-"""
-SECURITY CODES
-"""
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
         "http://localhost:3001",
         "https://studybazar.vercel.app",
-        "https://*.vercel.app",
     ],
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Set-Cookie"],
 )
 
-# SECURITY
 security = HTTPBearer()
 
-"""
-Server Started Message
-"""
-@app.on_event("startup")
-async def startup_event():
-    # Fast lookup + prevent duplicate active tokens
-    await run_in_threadpool(
-        refresh_token_collection.create_index, "token", unique=True
-    )
-    # TTL index — MongoDB auto-deletes expired tokens after 0 seconds past expires_at
-    await run_in_threadpool(
-        refresh_token_collection.create_index,
-        "expires_at",
-        expireAfterSeconds=0
-    )
-    print("Server started successfully")
-
 @app.get("/")
-def StartServer():
+def start_server():
     return {"message": "Server is running successfully"}
 
 # --------------------
-# Importing routers
+# Routers
 # --------------------
-from app.routers import auth, profile, follower, products, lost_and_found, chat
+from app.routers import auth, profile, follower, products, lost_and_found, chat  # noqa: E402
+from app.socket_manager import socket_app  # noqa: E402
 
-# Include the router
 app.include_router(auth.router)
 app.include_router(profile.router)
 app.include_router(follower.router)
@@ -136,11 +110,36 @@ app.include_router(products.router)
 app.include_router(lost_and_found.router)
 app.include_router(chat.router)
 
-# --------------------
-# Mount Socket.IO (CRITICAL FIX)
-# --------------------
-# Mount the WebSocket app at /socket.io (Direct connection)
+# Pick ONE mount point, matching your frontend
 app.mount("/socket.io", socket_app)
 
-# Mount the WebSocket app at /api/socket.io (Through Next.js Proxy)
-app.mount("/api/socket.io", socket_app)
+# --------------------
+# Test endpoint
+# --------------------
+@app.get("/products-test")
+async def test_get_products():
+    products = await run_in_threadpool(
+        lambda: list(
+            product_collection.find({"is_active": True})
+            .sort("created_at", -1)
+            .limit(20)
+        )
+    )
+    for p in products:
+        p["_id"] = str(p["_id"])
+        if "seller_id" in p:
+            p["seller_id"] = str(p["seller_id"])
+    return {
+        "status": "ok",
+        "data": {
+            "products": products,
+            "pagination": {
+                "current_page": 1,
+                "total_pages": 1,
+                "total_items": len(products),
+                "items_per_page": 20,
+                "has_next": False,
+                "has_previous": False,
+            },
+        },
+    }

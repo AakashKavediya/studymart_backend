@@ -13,7 +13,10 @@ All the APIS for AUTHENTICATION
 
 """
 
-
+import os
+IS_DEV = os.getenv("APP_ENV", "development") == "development"
+secure_cookie = not IS_DEV
+samesite = "none" if not IS_DEV else "lax"
 
 # ==========================
 # Standard Library Imports
@@ -75,8 +78,7 @@ async def login_user(
     email = user.email.strip().lower()
 
     db_user = await run_in_threadpool(
-        signup_collection.find_one,
-        {"email": email},
+        signup_collection.find_one, {"email": email}
     )
 
     if db_user is None:
@@ -85,11 +87,26 @@ async def login_user(
             detail="Invalid email or password",
         )
 
+    # ------------------------------------------------------------------
+    # Google-only accounts have no password set → cannot use email/password login
+    # ------------------------------------------------------------------
+    if not db_user.get("password"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="This account was created with Google. Please sign in with Google.",
+        )
+
     password_valid = await run_in_threadpool(
         bcrypt.checkpw,
         user.password.encode("utf-8"),
         db_user["password"],
     )
+
+    if not password_valid:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password",
+        )
 
     if not password_valid:
         raise HTTPException(
@@ -156,7 +173,7 @@ async def login_user(
     return {
         "status": "ok",
         "access_token": access_token,
-    }
+    }   
 
 
 
@@ -531,3 +548,128 @@ async def get_current_user_profile(
     }
     
     return merged_data
+
+
+
+# ------------------------------------------------------------------
+# Google Login Service
+# ------------------------------------------------------------------
+import secrets as _secrets
+from google.auth.transport import requests as _google_requests  # noqa: F401
+from app.services.google_service import verify_google_id_token
+
+async def _upsert_google_user(payload: dict) -> dict:
+    """
+    Insert or fetch a user coming from Google.
+    Returns the signup_collection document.
+    """
+    email = payload["email"].strip().lower()
+    name = payload.get("name") or email.split("@")[0]
+    picture = payload.get("picture")
+    email_verified = payload.get("email_verified", False)
+
+    existing = await run_in_threadpool(
+        signup_collection.find_one,
+        {"email": email},
+    )
+
+    if existing:
+        # Update last login + refresh picture if missing
+        await run_in_threadpool(
+            signup_collection.update_one,
+            {"_id": existing["_id"]},
+            {
+                "$set": {
+                    "last_login": datetime.utcnow(),
+                    "auth_provider": existing.get("auth_provider", "google"),
+                    "google_sub": payload.get("sub"),
+                    "email_verified": email_verified,
+                }
+            },
+        )
+        return existing
+
+    # First time — create user + profile
+    now = datetime.utcnow()
+    new_user = {
+        "name": name,
+        "email": email,
+        "password": None,                 # Google users have no local password
+        "campus": None,
+        "phone": None,
+        "year": None,
+        "auth_provider": "google",
+        "google_sub": payload.get("sub"),
+        "email_verified": email_verified,
+        "profile_image": picture,
+        "created_at": now,
+        "updated_at": now,
+        "last_login": now,
+    }
+
+    result = await run_in_threadpool(signup_collection.insert_one, new_user)
+
+    # Also create the profile doc
+    profile_doc = {
+        "_id": result.inserted_id,
+        "name": name,
+        "email": email,
+        "profile_image": picture,
+        "auth_provider": "google",
+        "created_at": now,
+        "updated_at": now,
+    }
+    await run_in_threadpool(profile_collection.insert_one, profile_doc)
+
+    new_user["_id"] = result.inserted_id
+    return new_user
+
+
+async def google_login_service(id_token_str: str, response: Response):
+    """
+    Sign in / sign up via Google ID token.
+    Mirrors the token + cookie logic in login_user().
+    """
+    payload = await verify_google_id_token(id_token_str)
+
+    db_user = await _upsert_google_user(payload)
+
+    now = datetime.utcnow()
+    user_id = str(db_user["_id"])
+
+    access_token = create_access_token(
+        user_id=user_id,
+        email=db_user["email"],
+    )
+    refresh_token = create_refresh_token()
+    refresh_expiry = now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+
+    await run_in_threadpool(
+        refresh_token_collection.insert_one,
+        {
+            "token": refresh_token,
+            "user_id": user_id,
+            "email": db_user["email"],
+            "created_at": now,
+            "expires_at": refresh_expiry,
+            "is_revoked": False,
+        },
+    )
+
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        secure=True,
+        samesite="none",
+        path="/",
+        max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
+    )
+
+    logging.info(f"Google login successful for {db_user['email']}")
+
+    return {
+        "status": "ok",
+        "access_token": access_token,
+        "is_new_user": db_user.get("created_at") == now,
+    }

@@ -15,8 +15,16 @@ All the APIS for AUTHENTICATION
 
 
 from fastapi import APIRouter, Depends, Request, Response, status
-from app.schemas.user_schema import CreateUser, LoginSchema
-from app.services.auth_service import login_user, sign_up, refresh_token_service, debug_cookies_service, logout, get_current_user_profile
+from app.schemas.user_schema import CreateUser, LoginSchema, GoogleLoginSchema
+from app.services.auth_service import (
+    login_user,
+    sign_up,
+    refresh_token_service,
+    debug_cookies_service,
+    logout,
+    get_current_user_profile,
+    google_login_service,
+)
 
 router = APIRouter(
     prefix="/auth",
@@ -123,3 +131,21 @@ async def get_me(
         "status": "ok",
         "user": current_user
     }
+
+
+
+# ==========================================================
+# Google Sign-In
+# ==========================================================
+@router.post(
+    "/google",
+    status_code=status.HTTP_200_OK,
+)
+async def google_login(
+    body: GoogleLoginSchema,
+    response: Response,
+):
+    """
+    Exchange a Google ID token for our own access + refresh tokens.
+    """
+    return await google_login_service(body.id_token, response)
