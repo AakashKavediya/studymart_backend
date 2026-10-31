@@ -1,4 +1,3 @@
-
 """
 All the APIS for AUTHENTICATION
 --
@@ -10,13 +9,16 @@ All the APIS for AUTHENTICATION
 | GET    | `/auth/me`           | Get current logged-in user | done
 | POST   | `/auth/refresh`      | Refresh access token       | done
 | POST   | `/auth/verify-email` | Verify college email       |
-
 """
 
 import os
+from typing import Literal
+
 IS_DEV = os.getenv("APP_ENV", "development") == "development"
 secure_cookie = not IS_DEV
-samesite = "none" if not IS_DEV else "lax"
+
+# ✅ FIX: Explicit Literal typing resolves the Pylance argument type error
+samesite: Literal["lax", "strict", "none"] | None = "none" if not IS_DEV else "lax"
 
 # ==========================
 # Standard Library Imports
@@ -31,19 +33,16 @@ from datetime import datetime, timedelta
 import bcrypt
 from fastapi import Depends, HTTPException, Response, status, Request
 from fastapi.concurrency import run_in_threadpool
+from pymongo.errors import DuplicateKeyError
 
 # ==========================
 # Local Imports
 # ==========================
 from app.mongodb.connect import connectdb
 from app.schemas.user_schema import LoginSchema, CreateUser
-from pymongo.errors import DuplicateKeyError
 from app.utils.user import get_current_user
 
-
-
 # Temporary imports
-# (We'll move these later to utils/jwt.py)
 from app.main import (
     REFRESH_TOKEN_EXPIRE_DAYS,
     create_access_token,
@@ -59,8 +58,6 @@ db = connectdb()
 signup_collection = db["signup"]
 refresh_token_collection = db["refresh_tokens"]
 profile_collection = db["user-profile"]
-
-
 
 
 # ==========================================================
@@ -101,12 +98,6 @@ async def login_user(
         user.password.encode("utf-8"),
         db_user["password"],
     )
-
-    if not password_valid:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
-        )
 
     if not password_valid:
         raise HTTPException(
@@ -159,8 +150,8 @@ async def login_user(
         key="refresh_token",
         value=refresh_token,
         httponly=True,
-        secure=True,
-        samesite="none",
+        secure=secure_cookie,
+        samesite=samesite,
         path="/",
         max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
         expires=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
@@ -174,9 +165,6 @@ async def login_user(
         "status": "ok",
         "access_token": access_token,
     }   
-
-
-
 
 
 # ==========================================================
@@ -253,12 +241,9 @@ async def sign_up(user: CreateUser):
         )
     
 
-
-
-
 # ==========================================================
 # Refresh Token Service
-# =========================================================
+# ==========================================================
 
 async def refresh_token_service(request: Request, response: Response):
     # Log request details for debugging - with null safety
@@ -360,12 +345,11 @@ async def refresh_token_service(request: Request, response: Response):
         key="refresh_token",
         value=new_refresh_token,
         httponly=True,
-        secure=True,
-        samesite="none",
+        secure=secure_cookie,
+        samesite=samesite,
         path="/",
         max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
         expires=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
-        # domain=".railway.app",  # ADD THIS - matches login endpoint
     )
 
     # --------------------------------------------------
@@ -378,11 +362,9 @@ async def refresh_token_service(request: Request, response: Response):
     }
 
 
-
-
 # ==========================================================
 # Debug Cookies Service
-# =========================================================
+# ==========================================================
 
 async def debug_cookies_service(request: Request):
     """
@@ -422,14 +404,9 @@ async def debug_cookies_service(request: Request):
     }
 
 
-
-
-
-
 # ==========================================================
 # Logout Service
-# =========================================================
-
+# ==========================================================
 
 async def logout(request: Request, response: Response):
 
@@ -460,8 +437,8 @@ async def logout(request: Request, response: Response):
         key="refresh_token",
         path="/",
         httponly=True,
-        secure=True,          # True in production (HTTPS)
-        samesite="none",
+        secure=secure_cookie,
+        samesite=samesite,
     )
 
     # --------------------------------------------------
@@ -473,13 +450,9 @@ async def logout(request: Request, response: Response):
     }
 
 
-
-
-
 # ==========================================================
 # Get Me Service
-# =========================================================
-
+# ==========================================================
 
 async def get_current_user_profile(
     current_user = Depends(get_current_user)
@@ -548,7 +521,6 @@ async def get_current_user_profile(
     }
     
     return merged_data
-
 
 
 # ------------------------------------------------------------------
@@ -660,8 +632,8 @@ async def google_login_service(id_token_str: str, response: Response):
         key="refresh_token",
         value=refresh_token,
         httponly=True,
-        secure=True,
-        samesite="none",
+        secure=secure_cookie,
+        samesite=samesite,
         path="/",
         max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60,
     )

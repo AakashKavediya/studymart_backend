@@ -1,0 +1,48 @@
+# =============================================================================
+# StudyMart Backend - .dockerignore
+# =============================================================================
+
+# Version control
+.git/
+.gitignore
+.gitattributes
+
+# Python virtual environments & packages
+.venv/
+venv/
+ENV/
+env/
+*.egg-info/
+dist/
+build/
+
+# Bytecode and runtime caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Testing, type checking & linting caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Local environment & secret files (DO NOT BAKE INTO IMAGE)
+.env
+.env.*
+!.env.example
+
+# IDE, editor & OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Documentation & temporary scratch files
+*.log
+Procfile
