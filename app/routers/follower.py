@@ -1,5 +1,5 @@
-# app/routers/follower.py — complete replacement
-from fastapi import APIRouter, Depends, status, Query
+# app/routers/follower.py
+from fastapi import APIRouter, Depends, status
 from app.utils.user import get_current_user
 from app.services.follow_service import (
     follow_user_service,
@@ -16,7 +16,6 @@ async def follow_user(
     user_id: str,
     current_user=Depends(get_current_user),
 ):
-    """Follow a user."""
     return await follow_user_service(user_id, current_user)
 
 
@@ -25,7 +24,6 @@ async def unfollow_user(
     user_id: str,
     current_user=Depends(get_current_user),
 ):
-    """Unfollow a user."""
     return await unfollow_user_service(user_id, current_user)
 
 
@@ -34,7 +32,6 @@ async def list_followers(
     user_id: str,
     current_user=Depends(get_current_user),
 ):
-    """List users following {user_id}."""
     viewer_id = str(current_user.get("_id") or current_user.get("id") or "")
     return await get_followers_service(user_id, viewer_id)
 
@@ -44,6 +41,5 @@ async def list_following(
     user_id: str,
     current_user=Depends(get_current_user),
 ):
-    """List users {user_id} follows."""
     viewer_id = str(current_user.get("_id") or current_user.get("id") or "")
-    return await get_following_service(user_id, viewer_id)
+    return await get_following_service(user_id, viewer_id)  

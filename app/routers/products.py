@@ -39,7 +39,8 @@ No. | Method | Endpoint                              | Purpose                  
 ==========================================================================================================
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Path, Body
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Path, Body, BackgroundTasks
+from fastapi.concurrency import run_in_threadpool
 from app.schemas.product_schema import ProductCondition, ProductCreate, ProductType
 from app.services.product_service import (
     create_new_product_service,
@@ -104,6 +105,7 @@ router = APIRouter(prefix="/products", tags=["Products"])
 @router.post("/create", status_code=status.HTTP_201_CREATED)
 async def create_product(
     product_data: ProductCreate,
+    background_tasks: BackgroundTasks, # ✅ ADD THIS
     current_user = Depends(get_current_user)
 ):
     """
@@ -117,7 +119,7 @@ async def create_product(
     - **images**: Additional product images (max 4)
     - **tags**: Product tags for better searchability
     """
-    return await create_new_product_service(product_data, current_user)
+    return await create_new_product_service(product_data, current_user, background_tasks)
 
 
 @router.get("/search", status_code=status.HTTP_200_OK)

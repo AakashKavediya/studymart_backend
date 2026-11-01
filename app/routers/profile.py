@@ -7,7 +7,7 @@ USER PROFILE APIs
 | PUT    | `/users/profile`       | Update own profile                     | Done |
 | GET    | `/users/products`      | Get all products listed by the user    | 🚧 Pending |
 | POST   | `/users/profile_image` | Upload profile image                   | 🚧 Pending |
-| GET    | `/users/stats`         | Get user statistics                    | 🚧 Pending |
+| GET    | `/users/stats`         | Get user statistics                    | Done |
 | PUT    | `/users/password`      | Change account password                | Done |
 | DELETE | `/users/account`       | Delete user account                    | Done |
 
@@ -20,7 +20,16 @@ from app.utils.user import get_current_user
 from app.schemas.profile_schema import UpdatePassword, UpdateProfile, ProfileImageUpload
 from app.schemas.user_schema import CreateUser, LoginSchema
 from app.services.auth_service import get_current_user_profile
-from app.services.profile_service import update_user_profile_service, update_password_service, delete_account_service, get_user_profile_service, upload_profile_image_service, view_public_profile_service, get_user_stats_service, get_or_create_user_profile_service
+from app.services.profile_service import (
+    update_user_profile_service,
+    update_password_service,
+    delete_account_service,
+    get_user_profile_service,
+    upload_profile_image_service,
+    view_public_profile_service,
+    get_user_stats_service,
+    get_or_create_user_profile_service,
+)
 
 from app.mongodb.connect import connectdb
 db = connectdb()
@@ -41,20 +50,21 @@ async def update_user_profile(
 ):
     return await update_user_profile_service(profile_data, current_user)
 
+
 # ==========================================================
 # Update Password Router
 # ==========================================================
-
 @router.put("/password", status_code=status.HTTP_200_OK)
 async def update_password(
     password_data: UpdatePassword,
     current_user = Depends(get_current_user)
 ):
     return await update_password_service(password_data, current_user)
+
+
 # ==========================================================
 # Delete Account Router
 # ==========================================================
-
 @router.delete("/account", status_code=status.HTTP_200_OK)
 async def delete_account(
     current_user = Depends(get_current_user)
@@ -63,11 +73,22 @@ async def delete_account(
 
 
 # ==========================================================
+# Upload Profile Image Router
+# ==========================================================
+@router.post("/profile_image", status_code=status.HTTP_200_OK)
+async def upload_profile_image(
+    image_data: ProfileImageUpload,
+    current_user = Depends(get_current_user)
+):
+    """
+    Upload profile image URL from Cloudinary.
+    """
+    return await upload_profile_image_service(image_data, current_user)
+
+
+# ==========================================================
 # Search User by Name Router
 # ==========================================================
-
-
-# 1. Search route (specific, no path params)
 @router.get("/search", status_code=status.HTTP_200_OK)
 async def search_users(
     query: str = Query(..., min_length=2, description="Search query for username"),
@@ -76,7 +97,6 @@ async def search_users(
     """
     Search users by name (Instagram-style search).
     """
-    # Search in profile collection
     profiles = await run_in_threadpool(
         lambda: list(
             profile_collection.find(
@@ -85,7 +105,7 @@ async def search_users(
             ).limit(limit)
         )
     )
-    
+
     results = []
     for p in profiles:
         results.append({
@@ -95,73 +115,45 @@ async def search_users(
             "profile_image": p.get("profile_image"),
             "campus": p.get("campus"),
         })
-    
+
     return {
         "status": "ok",
         "results": results,
         "count": len(results)
     }
 
-# ==========================================================
-# Search User by ID Router
-# ==========================================================
-
-
-# 2. Get user by ID route (parameterized)
-@router.get(
-    "/{user_id}",
-    status_code=status.HTTP_200_OK,
-)
-async def get_user_profile(user_id: str):
-    """
-    Get public profile of a user by their ID.
-    """
-    # Validate ObjectId
-    if not ObjectId.is_valid(user_id):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid user ID format"
-        )
-    
-    user_profile = await get_user_profile_service(user_id)
-    
-    return {
-        "status": "ok",
-        "user": user_profile
-    }
 
 # ==========================================================
-# Upload Profile Image Router
+# Get User Stats (Followers / Following / Products)
+# ✅ Must be BEFORE /{user_id} so "stats" isn't treated as an ID
+# ✅ Must be async
 # ==========================================================
+@router.get("/stats", status_code=status.HTTP_200_OK)
+async def get_user_stats(current_user = Depends(get_current_user)):
+    """
+    Get user statistics: followers, following, and products.
+    """
+    return await get_user_stats_service(current_user)
 
 
-@router.post("/profile_image", status_code=status.HTTP_200_OK)
-async def upload_profile_image(
-    image_data: ProfileImageUpload,
-    current_user = Depends(get_current_user)
-):
+# ==========================================================
+# Get or Create User Profile
+# ✅ Must be BEFORE /{user_id}
+# ✅ Must be async
+# ==========================================================
+@router.get("/profile_or_create", status_code=status.HTTP_200_OK)
+async def get_or_create_user_profile(current_user = Depends(get_current_user)):
     """
-    Upload profile image URL from Cloudinary.
-    
-    Request body:
-    {
-        "profile_image": "https://res.cloudinary.com/..."
-    }
-    
-    Returns updated user profile with new image URL.
+    Get or create user profile.
     """
-    return await upload_profile_image_service(image_data, current_user)
+    return await get_or_create_user_profile_service(current_user)
 
 
 # ==========================================================
 # View Public Profile Router
+# ✅ Must be BEFORE /{user_id}
 # ==========================================================
-
-
-@router.get(
-    "/public/{user_id}",
-    status_code=status.HTTP_200_OK,
-)
+@router.get("/public/{user_id}", status_code=status.HTTP_200_OK)
 async def view_public_profile(user_id: str, current_user: dict = Depends(get_current_user)):
     """
     View a user's public profile.
@@ -170,30 +162,23 @@ async def view_public_profile(user_id: str, current_user: dict = Depends(get_cur
 
 
 # ==========================================================
-# Get Followers, Following, Products Router
+# Get user by ID route (parameterized)
+# ⚠️ Must be LAST among GETs so it doesn't catch "/stats", "/search", etc.
 # ==========================================================
-
-@router.get(
-    "/stats",
-    status_code=status.HTTP_200_OK,
-)
-def get_user_stats(current_user = Depends(get_current_user)):
+@router.get("/{user_id}", status_code=status.HTTP_200_OK)
+async def get_user_profile(user_id: str):
     """
-    Get user statistics: followers, following, and products.
+    Get public profile of a user by their ID.
     """
-    return get_user_stats_service(current_user)
+    if not ObjectId.is_valid(user_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid user ID format"
+        )
 
+    user_profile = await get_user_profile_service(user_id)
 
-# ==========================================================
-# Get or Create User Profile Router
-# =========================================================
-
-@router.get(
-    "/profile_or_create",
-    status_code=status.HTTP_200_OK,
-)
-def get_or_create_user_profile(current_user = Depends(get_current_user)):
-    """
-    Get or create user profile.
-    """
-    return get_or_create_user_profile_service(current_user)
+    return {
+        "status": "ok",
+        "user": user_profile
+    }

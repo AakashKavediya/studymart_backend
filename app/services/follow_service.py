@@ -1,7 +1,6 @@
 # app/services/follow_service.py
 """
 Follow / Unfollow services + list followers / following.
-Auto-detects the follow collection name ("follows" or "user-follow").
 """
 
 from datetime import datetime
@@ -23,7 +22,6 @@ def _resolve_follow_collection():
     for name in ("follows", "user-follow", "user_follow", "follow"):
         if name in existing:
             return db[name]
-    # Fall back to "follows" (creates on first write)
     return db["follows"]
 
 follow_collection = _resolve_follow_collection()
@@ -54,26 +52,6 @@ async def _assert_user_exists(user_id: str):
     return user
 
 
-def _normalize(doc: dict) -> dict:
-    """
-    Map whatever field names exist in the collection to our canonical
-    { follower_id, following_id } shape.
-    """
-    follower = (
-        doc.get("follower_id")
-        or doc.get("follower")
-        or doc.get("from_user")
-        or doc.get("from")
-    )
-    following = (
-        doc.get("following_id")
-        or doc.get("following")
-        or doc.get("to_user")
-        or doc.get("to")
-    )
-    return {"follower_id": follower, "following_id": following}
-
-
 # ==========================================================
 # FOLLOW
 # ==========================================================
@@ -89,15 +67,10 @@ async def follow_user_service(target_user_id: str, current_user: dict):
 
     await _assert_user_exists(target_user_id)
 
-    # Check existing — try multiple field name variants
+    # ✅ STRICT DUPLICATE CHECK: Only check the exact fields we insert
     existing = await run_in_threadpool(
         follow_collection.find_one,
-        {
-            "$or": [
-                {"follower_id": follower_id, "following_id": following_id},
-                {"follower": follower_id, "following": following_id},
-            ]
-        },
+        {"follower_id": follower_id, "following_id": following_id}
     )
     if existing:
         return {
@@ -106,8 +79,7 @@ async def follow_user_service(target_user_id: str, current_user: dict):
             "data": {"following": True},
         }
 
-    # Insert with canonical field names. If your code elsewhere reads
-    # "follower"/"following", change the keys below.
+    # Insert
     await run_in_threadpool(
         follow_collection.insert_one,
         {
@@ -117,7 +89,7 @@ async def follow_user_service(target_user_id: str, current_user: dict):
         },
     )
 
-    # Update cached counters (best-effort)
+    # Update cached counters
     await run_in_threadpool(
         profile_collection.update_one,
         {"_id": follower_id},
@@ -145,12 +117,7 @@ async def unfollow_user_service(target_user_id: str, current_user: dict):
 
     result = await run_in_threadpool(
         follow_collection.delete_one,
-        {
-            "$or": [
-                {"follower_id": follower_id, "following_id": following_id},
-                {"follower": follower_id, "following": following_id},
-            ]
-        },
+        {"follower_id": follower_id, "following_id": following_id}
     )
 
     if result.deleted_count == 0:
@@ -185,18 +152,7 @@ async def check_follow_status(follower_id: str, following_id: str) -> bool:
     try:
         doc = await run_in_threadpool(
             follow_collection.find_one,
-            {
-                "$or": [
-                    {
-                        "follower_id": _oid(follower_id),
-                        "following_id": _oid(following_id),
-                    },
-                    {
-                        "follower": _oid(follower_id),
-                        "following": _oid(following_id),
-                    },
-                ]
-            },
+            {"follower_id": _oid(follower_id), "following_id": _oid(following_id)}
         )
         return doc is not None
     except HTTPException:
@@ -204,7 +160,7 @@ async def check_follow_status(follower_id: str, following_id: str) -> bool:
 
 
 # ==========================================================
-# HYDRATE
+# HYDRATE — Convert user IDs into full user objects
 # ==========================================================
 async def _hydrate_users(user_ids: list, viewer_id: str | None) -> list:
     if not user_ids:
@@ -214,22 +170,11 @@ async def _hydrate_users(user_ids: list, viewer_id: str | None) -> list:
     viewer_following: set[str] = set()
     if viewer_id and ObjectId.is_valid(str(viewer_id)):
         cursor = follow_collection.find(
-            {
-                "$or": [
-                    {"follower_id": ObjectId(str(viewer_id))},
-                    {"follower": ObjectId(str(viewer_id))},
-                ]
-            },
-            {"following_id": 1, "following": 1},
+            {"follower_id": ObjectId(str(viewer_id))},
+            {"following_id": 1},
         )
-
         def _collect():
-            return [
-                str(_normalize(d).get("following_id"))
-                for d in cursor
-                if _normalize(d).get("following_id")
-            ]
-
+            return [str(d["following_id"]) for d in cursor if d.get("following_id")]
         viewer_following = set(await run_in_threadpool(_collect))
 
     # Fetch profiles
@@ -238,14 +183,9 @@ async def _hydrate_users(user_ids: list, viewer_id: str | None) -> list:
     )
     profile_by_id = {str(p["_id"]): p for p in profiles}
 
-    # Fetch signup fallback
+    # Fetch signup fallback (for missing profile data)
     signups = await run_in_threadpool(
-        lambda: list(
-            signup_collection.find(
-                {"_id": {"$in": user_ids}},
-                {"name": 1, "email": 1, "campus": 1},
-            )
-        )
+        lambda: list(signup_collection.find({"_id": {"$in": user_ids}}))
     )
     signup_by_id = {str(s["_id"]): s for s in signups}
 
@@ -254,17 +194,14 @@ async def _hydrate_users(user_ids: list, viewer_id: str | None) -> list:
         sid = str(uid)
         profile = profile_by_id.get(sid, {})
         signup = signup_by_id.get(sid, {})
-        results.append(
-            {
-                "id": sid,
-                "name": profile.get("name")
-                or signup.get("name")
-                or "Unknown",
-                "campus": profile.get("campus") or signup.get("campus"),
-                "profile_image": profile.get("profile_image"),
-                "is_following": sid in viewer_following,
-            }
-        )
+        results.append({
+            "id": sid,
+            "name": profile.get("name") or signup.get("name") or "Unknown User",
+            "campus": profile.get("campus") or signup.get("campus") or "Student",
+            "profile_image": profile.get("profile_image") or signup.get("profile_image"),
+            "is_following": sid in viewer_following,
+            "is_self": (str(viewer_id) == sid) if viewer_id else False,
+        })
     return results
 
 
@@ -273,21 +210,10 @@ async def _hydrate_users(user_ids: list, viewer_id: str | None) -> list:
 # ==========================================================
 async def get_followers_service(user_id: str, viewer_id: str | None = None):
     _oid(user_id)
-    cursor = follow_collection.find(
-        {
-            "$or": [
-                {"following_id": ObjectId(user_id)},
-                {"following": ObjectId(user_id)},
-            ]
-        }
-    )
-
+    cursor = follow_collection.find({"following_id": ObjectId(user_id)})
+    
     def _ids():
-        return [
-            _normalize(d).get("follower_id")
-            for d in cursor
-            if _normalize(d).get("follower_id")
-        ]
+        return [d["follower_id"] for d in cursor if d.get("follower_id")]
 
     follower_ids = await run_in_threadpool(_ids)
     results = await _hydrate_users(follower_ids, viewer_id)
@@ -304,21 +230,10 @@ async def get_followers_service(user_id: str, viewer_id: str | None = None):
 # ==========================================================
 async def get_following_service(user_id: str, viewer_id: str | None = None):
     _oid(user_id)
-    cursor = follow_collection.find(
-        {
-            "$or": [
-                {"follower_id": ObjectId(user_id)},
-                {"follower": ObjectId(user_id)},
-            ]
-        }
-    )
-
+    cursor = follow_collection.find({"follower_id": ObjectId(user_id)})
+    
     def _ids():
-        return [
-            _normalize(d).get("following_id")
-            for d in cursor
-            if _normalize(d).get("following_id")
-        ]
+        return [d["following_id"] for d in cursor if d.get("following_id")]
 
     following_ids = await run_in_threadpool(_ids)
     results = await _hydrate_users(following_ids, viewer_id)

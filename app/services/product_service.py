@@ -56,8 +56,8 @@ signup_collection = db["signup"]
 Importing from FastAPI
 """
 from fastapi.concurrency import run_in_threadpool
-from fastapi import Depends, HTTPException, status
-
+from fastapi import Depends, HTTPException, status, BackgroundTasks
+from app.services.email_service import send_email
 
 """
 importing required modules
@@ -95,20 +95,14 @@ from app.schemas.product_schema import (
 
 async def create_new_product_service(
     product_data: ProductCreate,
-    current_user: dict
+    current_user: dict,
+    background_tasks: BackgroundTasks  # ✅ Added
 ):
     """
-    Create a new product for sale.
-    
-    Args:
-        product_data (ProductCreate): Validated product data from request
-        current_user (dict): Currently authenticated user
-    
-    Returns:
-        dict: Response with product_id and status
+    Create a new product for sale and notify followers via email.
     """
     
-    # 1. Extract user_id from current_user
+    # 1. Extract user_id
     user_id = current_user.get("_id") or current_user.get("id")
     
     if not user_id:
@@ -117,7 +111,7 @@ async def create_new_product_service(
             detail="User not authenticated"
         )
     
-    # 2. Check if user has a profile
+    # 2. Check profile
     user_profile = await run_in_threadpool(
         profile_collection.find_one,
         {"_id": ObjectId(user_id)}
@@ -129,49 +123,31 @@ async def create_new_product_service(
             detail="User profile not found. Please complete your profile first."
         )
     
-    # 3. Build product payload (simplified)
+    # 3. Build payload
     payload = {
         "seller_id": ObjectId(user_id),
-        
-        # Basic Info
         "title": product_data.title,
         "description": product_data.description,
-        
-        # Category
         "category": product_data.category,
-        
-        # Pricing
         "price": product_data.price,
-        
-        # Images
         "thumbnail": str(product_data.thumbnail),
         "images": [str(img) for img in product_data.images] if product_data.images else [],
-        
-        # Tags
         "tags": product_data.tags,
-        
-        # Status
         "is_active": True,
         "is_verified": False,
         "is_featured": False,
         "status": ProductStatus.ACTIVE.value,
-        
-        # Seller info (cached for faster display)
         "seller_name": user_profile.get("name"),
         "seller_campus": user_profile.get("campus"),
-        
-        # Engagement counters
         "views_count": 0,
         "likes_count": 0,
         "saved_count": 0,
         "report_count": 0,
-        
-        # Timestamps
         "created_at": datetime.utcnow(),
         "updated_at": datetime.utcnow(),
     }
     
-    # 4. Insert into database
+    # 4. Insert into DB
     try:
         result = await run_in_threadpool(
             product_collection.insert_one,
@@ -188,8 +164,42 @@ async def create_new_product_service(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create product"
         )
+
+    # ✅ 5. Background Task: Notify Followers
+    async def notify_followers():
+        try:
+            # Find all followers
+            followers_cursor = follow_collection.find({"following_id": ObjectId(user_id)})
+            follower_ids = [f["follower_id"] for f in await run_in_threadpool(list, followers_cursor)]
+            
+            if not follower_ids:
+                return
+
+            # Get their emails
+            users = await run_in_threadpool(
+                lambda: list(signup_collection.find({"_id": {"$in": follower_ids}}))
+            )
+            emails = [u["email"] for u in users if u.get("email")]
+            
+            if not emails:
+                return
+
+            subject = f"New Item from {user_profile.get('name')}!"
+            body = f"""
+            <div style="font-family: sans-serif; padding: 20px;">
+                <h2>{user_profile.get('name')} just posted a new item!</h2>
+                <p><strong>{product_data.title}</strong> - ₹{product_data.price}</p>
+                <p>{product_data.description or ''}</p>
+                <a href="http://localhost:3000/" style="background:#F5A623; padding:10px 20px; text-decoration:none; color:black; border-radius:5px;">View Item</a>
+            </div>
+            """
+            await send_email(subject, emails, body)
+        except Exception as e:
+            print(f"❌ Error notifying followers: {e}")
+
+    background_tasks.add_task(notify_followers)
     
-    # 5. Return response
+    # 6. Return response
     return {
         "status": "ok",
         "message": "Product created successfully",
@@ -1334,7 +1344,6 @@ async def get_my_products_service(
     """
     Get current user's products.
     """
-    # 1. Get user ID
     user_id = current_user.get("_id") or current_user.get("id")
     if not user_id:
         raise HTTPException(
@@ -1342,23 +1351,22 @@ async def get_my_products_service(
             detail="User not authenticated"
         )
     
-    # 2. Build query
-    query: Dict[str, Any] = {"seller_id": ObjectId(user_id)}
+    # ✅ FILTER OUT DELETED PRODUCTS
+    query: Dict[str, Any] = {
+        "seller_id": ObjectId(user_id),
+        "is_active": True  # <-- THIS IS THE FIX
+    }
     
-    # Status filter
     if status_filter:
         query["status"] = status_filter.value if hasattr(status_filter, 'value') else status_filter
     
-    # 3. Pagination
     skip = (page - 1) * limit
     
-    # 4. Get total count
     total_count = await run_in_threadpool(
         product_collection.count_documents,
         query
     )
     
-    # 5. Fetch products
     cursor = await run_in_threadpool(
         product_collection.find,
         query
@@ -1367,14 +1375,12 @@ async def get_my_products_service(
     
     products_list = await run_in_threadpool(list, cursor)
     
-    # 6. Format
     formatted_products = []
     for product in products_list:
         product["_id"] = str(product["_id"])
         product["seller_id"] = str(product["seller_id"])
         formatted_products.append(product)
     
-    # 7. Pagination metadata
     total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
     
     return {

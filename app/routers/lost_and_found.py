@@ -8,17 +8,17 @@ No. | Method | Endpoint                                  | Purpose              
  1  | POST   | /lost-and-found                           | Create a new lost item                       | ✅ Done
  2  | GET    | /lost-and-found                           | Get all lost items (with pagination)         | ✅ Done
  3  | GET    | /lost-and-found/search                    | Search lost items                            | ✅ Done
- 4  | GET    | /lost-and-found/{item_id}                 | Get a specific lost item by ID               | ✅ Done
- 5  | PUT    | /lost-and-found/{item_id}                 | Edit/update a lost item                      | ✅ Done
- 6  | DELETE | /lost-and-found/{item_id}                 | Delete a lost item                           | ✅ Done
- 7  | PATCH  | /lost-and-found/{item_id}/status          | Update item status                           | ✅ Done
- 8  | POST   | /lost-and-found/{item_id}/claim           | Claim a found item                           | ✅ Done
- 9  | POST   | /lost-and-found/{item_id}/comment         | Add a comment to a lost item                 | ✅ Done
-10  | GET    | /lost-and-found/{item_id}/comments        | Get comments for a lost item                 | ✅ Done
-11  | GET    | /lost-and-found/my-items                  | Get current user's lost items                | ✅ Done
-12  | GET    | /lost-and-found/user/{user_id}            | Get items by a specific user                 | ✅ Done
-13  | GET    | /lost-and-found/categories                | Get all categories with counts               | ✅ Done
-14  | GET    | /lost-and-found/stats                     | Get lost & found statistics                  | ✅ Done
+ 4  | GET    | /lost-and-found/my-items                  | Get current user's lost items                | ✅ Done
+ 5  | GET    | /lost-and-found/user/{user_id}            | Get items by a specific user                 | ✅ Done
+ 6  | GET    | /lost-and-found/categories                | Get all categories with counts               | ✅ Done
+ 7  | GET    | /lost-and-found/stats                     | Get lost & found statistics                  | ✅ Done
+ 8  | GET    | /lost-and-found/{item_id}                 | Get a specific lost item by ID               | ✅ Done
+ 9  | PUT    | /lost-and-found/{item_id}                 | Edit/update a lost item                      | ✅ Done
+ 10 | DELETE | /lost-and-found/{item_id}                 | Delete a lost item                           | ✅ Done
+ 11 | PATCH  | /lost-and-found/{item_id}/status          | Update item status                           | ✅ Done
+ 12 | POST   | /lost-and-found/{item_id}/claim           | Claim a found item                           | ✅ Done
+ 13 | POST   | /lost-and-found/{item_id}/comment         | Add a comment to a lost item                 | ✅ Done
+ 14 | GET    | /lost-and-found/{item_id}/comments        | Get comments for a lost item                 | ✅ Done
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Path, Body
@@ -56,9 +56,8 @@ router = APIRouter(prefix="/lost-and-found", tags=["Lost & Found"])
 
 
 # ============================================================
-# 1. CREATE LOST ITEM
+# 1. CREATE LOST ITEM (POST)
 # ============================================================
-
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_lost_item(
     item_data: LostItemCreate,
@@ -66,20 +65,13 @@ async def create_lost_item(
 ):
     """
     Create a new lost/found item.
-    
-    - **title**: Item title (3-200 characters)
-    - **description**: Item description (optional)
-    - **type**: 'lost' or 'complaint'
-    - **location**: Where it was lost/found
-    - **image**: Optional image URL (Cloudinary)
     """
     return await create_lost_item_service(item_data, current_user)
 
 
 # ============================================================
-# 2. GET ALL LOST ITEMS (with pagination)
+# 2. GET ALL LOST ITEMS (GET)
 # ============================================================
-
 @router.get("/", status_code=status.HTTP_200_OK)
 async def get_all_lost_items(
     page: int = Query(1, ge=1, description="Page number"),
@@ -94,9 +86,8 @@ async def get_all_lost_items(
 
 
 # ============================================================
-# 3. SEARCH LOST ITEMS
+# 3. SEARCH LOST ITEMS (GET)
 # ============================================================
-
 @router.get("/search", status_code=status.HTTP_200_OK)
 async def search_lost_items(
     query: Optional[str] = Query(None, description="Search keyword"),
@@ -110,11 +101,6 @@ async def search_lost_items(
 ):
     """
     Search lost items by keyword with filters.
-    
-    - **query**: Search term
-    - **type**: 'lost' or 'complaint'
-    - **status**: active, resolved, closed
-    - **location**: Location filter
     """
     search_params = LostItemSearchParams(
         query=query,
@@ -130,131 +116,9 @@ async def search_lost_items(
 
 
 # ============================================================
-# 4. GET LOST ITEM BY ID
+# 4. GET MY LOST ITEMS (GET)
+# ✅ MOVED ABOVE /{item_id} to prevent 400 error
 # ============================================================
-
-@router.get("/{item_id}", status_code=status.HTTP_200_OK)
-async def get_lost_item_by_id(
-    item_id: str = Path(..., description="Item ID"),
-    current_user = Depends(get_current_user)
-):
-    """
-    Get a specific lost item by its ID.
-    """
-    return await get_lost_item_by_id_service(item_id, current_user)
-
-
-# ============================================================
-# 5. UPDATE LOST ITEM
-# ============================================================
-
-@router.put("/{item_id}", status_code=status.HTTP_200_OK)
-async def update_lost_item(
-    item_id: str = Path(..., description="Item ID"),
-    update_data: LostItemUpdate = Body(...),
-    current_user = Depends(get_current_user)
-):
-    """
-    Update an existing lost item.
-    
-    Only the owner can update their own item.
-    """
-    return await update_lost_item_service(item_id, update_data, current_user)
-
-
-# ============================================================
-# 6. DELETE LOST ITEM
-# ============================================================
-
-@router.delete("/{item_id}", status_code=status.HTTP_200_OK)
-async def delete_lost_item(
-    item_id: str = Path(..., description="Item ID"),
-    current_user = Depends(get_current_user)
-):
-    """
-    Delete a lost item.
-    
-    Only the owner can delete their own item.
-    """
-    return await delete_lost_item_service(item_id, current_user)
-
-
-# ============================================================
-# 7. UPDATE ITEM STATUS
-# ============================================================
-
-@router.patch("/{item_id}/status", status_code=status.HTTP_200_OK)
-async def update_item_status(
-    item_id: str = Path(..., description="Item ID"),
-    status_value: LostItemStatus = Query(..., description="New status"),
-    current_user = Depends(get_current_user)
-):
-    """
-    Update item status.
-    
-    Available statuses:
-    - **active**: Item is active
-    - **resolved**: Item is resolved
-    - **closed**: Item is closed
-    """
-    return await update_item_status_service(item_id, status_value, current_user)
-
-
-# ============================================================
-# 8. CLAIM ITEM
-# ============================================================
-
-@router.post("/{item_id}/claim", status_code=status.HTTP_200_OK)
-async def claim_item(
-    item_id: str = Path(..., description="Item ID"),
-    claim_data: ClaimItemCreate = Body(...),
-    current_user = Depends(get_current_user)
-):
-    """
-    Claim a found item.
-    
-    - **proof_description**: Description proving ownership
-    - **contact_info**: Contact information (optional)
-    """
-    return await claim_item_service(claim_data, current_user)
-
-
-# ============================================================
-# 9. ADD COMMENT (✅ This is the missing piece!)
-# ============================================================
-
-@router.post("/{item_id}/comment", status_code=status.HTTP_200_OK)
-async def add_comment(
-    item_id: str = Path(..., description="Item ID"),
-    comment_data: CommentCreate = Body(...),
-    current_user = Depends(get_current_user)
-):
-    """
-    Add a comment to a lost item.
-    """
-    return await add_comment_service(item_id, comment_data, current_user)
-
-
-# ============================================================
-# 10. GET COMMENTS
-# ============================================================
-
-@router.get("/{item_id}/comments", status_code=status.HTTP_200_OK)
-async def get_comments(
-    item_id: str = Path(..., description="Item ID"),
-    page: int = Query(1, ge=1, description="Page number"),
-    limit: int = Query(20, ge=1, le=50, description="Comments per page")
-):
-    """
-    Get comments for a lost item.
-    """
-    return await get_comments_service(item_id, page, limit)
-
-
-# ============================================================
-# 11. GET MY LOST ITEMS
-# ============================================================
-
 @router.get("/my-items", status_code=status.HTTP_200_OK)
 async def get_my_lost_items(
     page: int = Query(1, ge=1, description="Page number"),
@@ -269,9 +133,9 @@ async def get_my_lost_items(
 
 
 # ============================================================
-# 12. GET ITEMS BY USER
+# 5. GET ITEMS BY USER ID (GET)
+# ✅ MOVED ABOVE /{item_id} to prevent 400 error
 # ============================================================
-
 @router.get("/user/{user_id}", status_code=status.HTTP_200_OK)
 async def get_user_lost_items(
     user_id: str = Path(..., description="User ID"),
@@ -286,9 +150,9 @@ async def get_user_lost_items(
 
 
 # ============================================================
-# 13. GET CATEGORIES
+# 6. GET CATEGORIES (GET)
+# ✅ MOVED ABOVE /{item_id} to prevent 400 error
 # ============================================================
-
 @router.get("/categories", status_code=status.HTTP_200_OK)
 async def get_lost_item_categories():
     """
@@ -298,12 +162,116 @@ async def get_lost_item_categories():
 
 
 # ============================================================
-# 14. GET STATISTICS
+# 7. GET STATISTICS (GET)
+# ✅ MOVED ABOVE /{item_id} to prevent 400 error
 # ============================================================
-
 @router.get("/stats", status_code=status.HTTP_200_OK)
 async def get_lost_found_stats():
     """
     Get lost & found statistics.
     """
     return await get_lost_found_stats_service()
+
+
+# ============================================================
+# 8. GET LOST ITEM BY ID (GET)
+# ⚠️ MUST BE DEFINED AFTER ALL STATIC ROUTES
+# ============================================================
+@router.get("/{item_id}", status_code=status.HTTP_200_OK)
+async def get_lost_item_by_id(
+    item_id: str = Path(..., description="Item ID"),
+    current_user = Depends(get_current_user)
+):
+    """
+    Get a specific lost item by its ID.
+    """
+    return await get_lost_item_by_id_service(item_id, current_user)
+
+
+# ============================================================
+# 9. UPDATE LOST ITEM (PUT)
+# ============================================================
+@router.put("/{item_id}", status_code=status.HTTP_200_OK)
+async def update_lost_item(
+    item_id: str = Path(..., description="Item ID"),
+    update_data: LostItemUpdate = Body(...),
+    current_user = Depends(get_current_user)
+):
+    """
+    Update an existing lost item.
+    """
+    return await update_lost_item_service(item_id, update_data, current_user)
+
+
+# ============================================================
+# 10. DELETE LOST ITEM (DELETE)
+# ============================================================
+@router.delete("/{item_id}", status_code=status.HTTP_200_OK)
+async def delete_lost_item(
+    item_id: str = Path(..., description="Item ID"),
+    current_user = Depends(get_current_user)
+):
+    """
+    Delete a lost item.
+    """
+    return await delete_lost_item_service(item_id, current_user)
+
+
+# ============================================================
+# 11. UPDATE ITEM STATUS (PATCH)
+# ============================================================
+@router.patch("/{item_id}/status", status_code=status.HTTP_200_OK)
+async def update_item_status(
+    item_id: str = Path(..., description="Item ID"),
+    status_value: LostItemStatus = Query(..., description="New status"),
+    current_user = Depends(get_current_user)
+):
+    """
+    Update item status.
+    """
+    return await update_item_status_service(item_id, status_value, current_user)
+
+
+# ============================================================
+# 12. CLAIM ITEM (POST)
+# ============================================================
+@router.post("/{item_id}/claim", status_code=status.HTTP_200_OK)
+async def claim_item(
+    item_id: str = Path(..., description="Item ID"),
+    claim_data: ClaimItemCreate = Body(...),
+    current_user = Depends(get_current_user)
+):
+    """
+    Claim a found item.
+    """
+    return await claim_item_service(claim_data, current_user)
+
+
+# ============================================================
+# 13. ADD COMMENT (POST)
+# ============================================================
+@router.post("/{item_id}/comment", status_code=status.HTTP_200_OK)
+async def add_comment(
+    item_id: str = Path(..., description="Item ID"),
+    comment_data: CommentCreate = Body(...),
+    current_user = Depends(get_current_user)
+):
+    """
+    Add a comment to a lost item.
+    """
+    return await add_comment_service(item_id, comment_data, current_user)
+
+
+# ============================================================
+# 14. GET COMMENTS (GET)
+# ============================================================
+@router.get("/{item_id}/comments", status_code=status.HTTP_200_OK)
+async def get_comments(
+    item_id: str = Path(..., description="Item ID"),
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(20, ge=1, le=50, description="Comments per page")
+):
+    """
+    Get comments for a lost item.
+    """
+    return await get_comments_service(item_id, page, limit)

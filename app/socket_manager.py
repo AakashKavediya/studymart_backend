@@ -1,17 +1,26 @@
+# app/socket_manager.py
 import socketio
 import traceback
 from bson import ObjectId
 from datetime import datetime
+from app.services.chat_service import save_message_service
 
+# ✅ Allow your actual frontend origin
 sio = socketio.AsyncServer(
     async_mode="asgi",
-    cors_allowed_origins="*",
+    cors_allowed_origins=[
+        "http://localhost:3000",
+        "https://studybazar.vercel.app",
+        "*",  # keep wildcard for dev
+    ],
     ping_interval=25,
     ping_timeout=60,
 )
 
-socket_app = socketio.ASGIApp(sio)
+socket_app = socketio.ASGIApp(sio, socketio_path="socket.io")
 
+# Track connected users
+connected_clients = {}
 
 def _json_safe(value):
     if isinstance(value, ObjectId):
@@ -28,11 +37,13 @@ def _json_safe(value):
 @sio.event
 async def connect(sid, environ, auth):
     print(f"✅ Client connected: {sid}")
+    connected_clients[sid] = auth
 
 
 @sio.event
 async def disconnect(sid):
     print(f"🔴 Client disconnected: {sid}")
+    connected_clients.pop(sid, None)
 
 
 @sio.event
@@ -47,6 +58,8 @@ async def join_room(sid, data):
             room_id = str(room_id)
             await sio.enter_room(sid, room_id)
             print(f"📍 User {sid} joined room: {room_id}")
+            # ✅ Notify the client that join succeeded
+            await sio.emit("joined_room", {"room_id": room_id, "sid": sid}, to=sid)
         else:
             print(f"⚠️ Join room failed: Missing room_id from {sid}")
     except Exception as e:
@@ -74,15 +87,10 @@ async def send_message(sid, data):
             print(f"❌ Invalid sender_id: {sender_id}. Message ignored.")
             return
 
-        from app.services.chat_service import save_message_service
-
         saved_message = await save_message_service(room_id, sender_id, content)
         print(f"✅ Saved to DB: {saved_message}")
 
         message_to_send = _json_safe(saved_message)
-
-        # 🔥 Intentionally DO NOT skip sender here; in single-tab testing the sender
-        # must receive the echoed message too.
         await sio.emit("receive_message", message_to_send, room=room_id)
         print(f"📤 Emitted message to room {room_id}")
 

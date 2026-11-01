@@ -5,12 +5,15 @@ from fastapi import HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from bson import ObjectId
 from app.mongodb.connect import connectdb
+from fastapi import BackgroundTasks
+from app.services.email_service import send_email
 
 # Connect to both databases
 db = connectdb()
 rooms_collection = db["chat_rooms"]
 messages_collection = db["chat_messages"]
 messages_archive_collection = db["chat_messages_archive"]  # Immutable backup
+signup_collection = db["signup"]
 
 # ----------------------------
 # 1. Create or Get Chat Room
@@ -139,6 +142,7 @@ async def save_message_service(
 ) -> dict:
     """
     Guarantees writes to BOTH Primary and Archive DBs before returning.
+    Also triggers an email if the recipient hasn't been notified recently.
     """
     if not ObjectId.is_valid(room_id):
         raise HTTPException(status_code=400, detail="Invalid room ID format")
@@ -152,15 +156,13 @@ async def save_message_service(
         "is_deleted": False
     }
     
-    # 1. Write to Primary DB (Must succeed)
+    # 1. Write to Primary DB
     result = await run_in_threadpool(messages_collection.insert_one, message_doc)
     message_doc["_id"] = result.inserted_id
     
-    # 2. Write to Immutable Archive DB (GUARANTEED)
+    # 2. Write to Archive DB
     archive_doc = message_doc.copy()
     archive_doc["_id"] = result.inserted_id
-    
-    # ✅ AWAIT THIS WRITE - CRITICAL FIX
     await run_in_threadpool(messages_archive_collection.insert_one, archive_doc)
     
     # 3. Update room's last message info
@@ -169,15 +171,61 @@ async def save_message_service(
         {"_id": ObjectId(room_id)},
         {"$set": {"last_message_text": content, "last_message_at": now}}
     )
-    
-    # 4. Return the message (Stringified IDs for JSON)
-    # ✅ CRITICAL FIX: Convert datetime to ISO string before returning
+
+    # ✅ 4. Offline Email Notification Logic (Debounced)
+    # We do this inline because the WebSocket manager calls this directly.
+    try:
+        room = await run_in_threadpool(rooms_collection.find_one, {"_id": ObjectId(room_id)})
+        recipient_id = [p for p in room["participants"] if p != sender_id][0]
+        
+        last_notified = room.get("last_notified_at")
+        
+        # If we haven't emailed them in the last 5 minutes, send one
+        if not last_notified or (now - last_notified) > timedelta(minutes=5):
+            
+            recipient = await run_in_threadpool(signup_collection.find_one, {"_id": ObjectId(recipient_id)})
+            if recipient and recipient.get("email"):
+                
+                # Get all unread messages from the last 5 mins
+                query_time = last_notified or (now - timedelta(minutes=5))
+                unread_msgs = await run_in_threadpool(
+                    lambda: list(messages_collection.find({
+                        "room_id": ObjectId(room_id),
+                        "created_at": {"$gt": query_time},
+                        "sender_id": {"$ne": ObjectId(recipient_id)}
+                    }))
+                )
+                
+                if unread_msgs:
+                    sender = await run_in_threadpool(signup_collection.find_one, {"_id": ObjectId(sender_id)})
+                    sender_name = sender.get("name", "Someone")
+                    
+                    msg_html = "".join([f"<li><b>{sender_name}:</b> {m['content']}</li>" for m in unread_msgs])
+                    body = f"""
+                    <h3>You have new messages from {sender_name}!</h3>
+                    <ul>{msg_html}</ul>
+                    <p><a href="http://localhost:3000/chat/{room_id}">Reply here</a></p>
+                    """
+                    
+                    await send_email(f"New message from {sender_name}", [recipient["email"]], body)
+                    
+                    # Mark that we just sent an email
+                    await run_in_threadpool(
+                        rooms_collection.update_one,
+                        {"_id": ObjectId(room_id)},
+                        {"$set": {"last_notified_at": now}}
+                    )
+                    print(f"📧 Sent offline email to {recipient['email']}")
+    except Exception as e:
+        print(f"❌ Error in email notification logic: {e}")
+
+    # 5. Return the message
     return {
         "_id": str(result.inserted_id),
         "room_id": str(room_id),
         "sender_id": str(sender_id),
         "content": content,
-        "created_at": now.isoformat(),  # ✅ Convert to ISO string here!
+        "created_at": now.isoformat(),
         "is_deleted": False
     }
 

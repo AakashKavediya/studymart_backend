@@ -18,7 +18,7 @@ class LostItemStatus(str, Enum):
     RESOLVED = "resolved"
     CLOSED = "closed"
 
-# ⚠️ DEPRECATED: Kept only to prevent Router crashes. Not used by frontend.
+# DEPRECATED: Kept only to prevent Router crashes. Not used by frontend.
 class LostItemCategory(str, Enum):
     ELECTRONICS = "electronics"
     BOOKS = "books"
@@ -31,7 +31,7 @@ class LostItemCategory(str, Enum):
     JEWELRY = "jewelry"
     OTHER = "other"
 
-# ⚠️ DEPRECATED: Kept only to prevent Router crashes. Not used by frontend.
+# DEPRECATED: Kept only to prevent Router crashes. Not used by frontend.
 class LostItemCondition(str, Enum):
     NEW = "new"
     GOOD = "good"
@@ -134,6 +134,11 @@ class LostItemSearchParams(BaseModel):
     """Schema for lost item search/filter parameters."""
     query: Optional[str] = None
     type: Optional[LostItemType] = None  # Filter by 'lost' or 'complaint'
+    
+    # ✅ ADDED: Missing fields to prevent Pylance errors
+    status: Optional[LostItemStatus] = None
+    location: Optional[str] = None
+    
     sort_by: str = "created_at"
     sort_order: str = "desc"
     page: int = Field(1, ge=1)
