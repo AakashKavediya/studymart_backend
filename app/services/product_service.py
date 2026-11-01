@@ -185,12 +185,14 @@ async def create_new_product_service(
                 return
 
             subject = f"New Item from {user_profile.get('name')}!"
+            
+            # ✅ UPDATED: Production URL
             body = f"""
             <div style="font-family: sans-serif; padding: 20px;">
                 <h2>{user_profile.get('name')} just posted a new item!</h2>
                 <p><strong>{product_data.title}</strong> - ₹{product_data.price}</p>
                 <p>{product_data.description or ''}</p>
-                <a href="http://localhost:3000/" style="background:#F5A623; padding:10px 20px; text-decoration:none; color:black; border-radius:5px;">View Item</a>
+                <a href="https://studybazar.vercel.app/" style="background:#F5A623; padding:10px 20px; text-decoration:none; color:black; border-radius:5px;">View Item</a>
             </div>
             """
             await send_email(subject, emails, body)
@@ -211,7 +213,6 @@ async def create_new_product_service(
             "created_at": datetime.utcnow().isoformat()
         }
     }
-
 
 # -------------------------
 # Alternative: Manual validation without Pydantic schema

@@ -140,10 +140,7 @@ async def save_message_service(
     sender_id: str,
     content: str
 ) -> dict:
-    """
-    Guarantees writes to BOTH Primary and Archive DBs before returning.
-    Also triggers an email if the recipient hasn't been notified recently.
-    """
+    """..."""
     if not ObjectId.is_valid(room_id):
         raise HTTPException(status_code=400, detail="Invalid room ID format")
     
@@ -172,50 +169,54 @@ async def save_message_service(
         {"$set": {"last_message_text": content, "last_message_at": now}}
     )
 
-    # ✅ 4. Offline Email Notification Logic (Debounced)
-    # We do this inline because the WebSocket manager calls this directly.
+    # 4. Offline Email Notification Logic (Debounced)
     try:
         room = await run_in_threadpool(rooms_collection.find_one, {"_id": ObjectId(room_id)})
-        recipient_id = [p for p in room["participants"] if p != sender_id][0]
-        
-        last_notified = room.get("last_notified_at")
-        
-        # If we haven't emailed them in the last 5 minutes, send one
-        if not last_notified or (now - last_notified) > timedelta(minutes=5):
+        if room and room.get("participants"):
+            recipient_id = [p for p in room["participants"] if p != sender_id][0]
             
-            recipient = await run_in_threadpool(signup_collection.find_one, {"_id": ObjectId(recipient_id)})
-            if recipient and recipient.get("email"):
+            last_notified = room.get("last_notified_at")
+            
+            # If we haven't emailed them in the last 5 minutes, send one
+            if not last_notified or (now - last_notified) > timedelta(minutes=5):
                 
-                # Get all unread messages from the last 5 mins
-                query_time = last_notified or (now - timedelta(minutes=5))
-                unread_msgs = await run_in_threadpool(
-                    lambda: list(messages_collection.find({
-                        "room_id": ObjectId(room_id),
-                        "created_at": {"$gt": query_time},
-                        "sender_id": {"$ne": ObjectId(recipient_id)}
-                    }))
-                )
-                
-                if unread_msgs:
-                    sender = await run_in_threadpool(signup_collection.find_one, {"_id": ObjectId(sender_id)})
-                    sender_name = sender.get("name", "Someone")
+                recipient = await run_in_threadpool(signup_collection.find_one, {"_id": ObjectId(recipient_id)})
+                if recipient and recipient.get("email"):
                     
-                    msg_html = "".join([f"<li><b>{sender_name}:</b> {m['content']}</li>" for m in unread_msgs])
-                    body = f"""
-                    <h3>You have new messages from {sender_name}!</h3>
-                    <ul>{msg_html}</ul>
-                    <p><a href="http://localhost:3000/chat/{room_id}">Reply here</a></p>
-                    """
-                    
-                    await send_email(f"New message from {sender_name}", [recipient["email"]], body)
-                    
-                    # Mark that we just sent an email
-                    await run_in_threadpool(
-                        rooms_collection.update_one,
-                        {"_id": ObjectId(room_id)},
-                        {"$set": {"last_notified_at": now}}
+                    # Get all unread messages from the last 5 mins
+                    query_time = last_notified or (now - timedelta(minutes=5))
+                    unread_msgs = await run_in_threadpool(
+                        lambda: list(messages_collection.find({
+                            "room_id": ObjectId(room_id),
+                            "created_at": {"$gt": query_time},
+                            "sender_id": {"$ne": ObjectId(recipient_id)}
+                        }))
                     )
-                    print(f"📧 Sent offline email to {recipient['email']}")
+                    
+                    if unread_msgs:
+                        sender = await run_in_threadpool(signup_collection.find_one, {"_id": ObjectId(sender_id)})
+                        sender_name = sender.get("name", "Someone") if sender else "Someone"
+                        
+                        msg_html = "".join([f"<li><b>{sender_name}:</b> {m['content']}</li>" for m in unread_msgs])
+                        
+                        # ✅ UPDATED: Production URL
+                        body = f"""
+                        <div style="font-family: sans-serif; padding: 20px;">
+                            <h3>You have new messages from {sender_name}!</h3>
+                            <ul>{msg_html}</ul>
+                            <a href="https://studybazar.vercel.app/chat/{room_id}" style="background:#F5A623; padding:10px 20px; text-decoration:none; color:black; border-radius:5px;">Reply here</a>
+                        </div>
+                        """
+                        
+                        await send_email(f"New message from {sender_name}", [recipient["email"]], body)
+                        
+                        # Mark that we just sent an email
+                        await run_in_threadpool(
+                            rooms_collection.update_one,
+                            {"_id": ObjectId(room_id)},
+                            {"$set": {"last_notified_at": now}}
+                        )
+                        print(f"📧 Sent offline email to {recipient['email']}")
     except Exception as e:
         print(f"❌ Error in email notification logic: {e}")
 
