@@ -464,7 +464,7 @@ async def delete_lost_item_service(
             detail="You are not authorized to delete this item"
         )
     
-    # 4. Delete
+    # 4. ✅ HARD DELETE from database
     result = await run_in_threadpool(
         lost_items_collection.delete_one,
         {"_id": ObjectId(item_id)}
